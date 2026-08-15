@@ -1,5 +1,5 @@
 /* ============================================================
-   トリリオネアを目指せ！ - 都市・路線データ（本州編）
+   トリリオネアを目指せ！ - 都市・路線データ（全国編）
    ここに都市を追加すれば、ロジック側の変更なしでゲームに反映される。
 
    tier: A=1000万〜9000万 / B=1億〜10億 / C=10億〜100億 /
@@ -12,31 +12,55 @@
    ============================================================ */
 
 // 地方データ。全都市を完全制覇すると「地方完全制覇」になる。
-// 将来「北海道」「四国」「九州・沖縄」を追加する場合はこの配列に追記するだけでよい。
 const REGIONS = [
+  { key: "hokkaido", name: "北海道", icon: "❄️" },
   { key: "tohoku", name: "東北", icon: "🌲" },
   { key: "kanto", name: "関東", icon: "🗼" },
   { key: "koshinetsu_hokuriku", name: "甲信越・北陸", icon: "🏔️" },
   { key: "tokai", name: "東海", icon: "🍵" },
   { key: "kansai", name: "近畿", icon: "⛩️" },
   { key: "chugoku", name: "中国", icon: "🦪" },
+  { key: "shikoku", name: "四国", icon: "🍊" },
+  { key: "kyushu", name: "九州", icon: "🌋" },
+  { key: "okinawa", name: "沖縄", icon: "🌺" },
 ];
 
 // 路線データ（双方向・自由移動、一度通った都市にも何度でも戻れる）。
 // 同じ都市キーが複数の路線に含まれると、その都市が分岐点（ジャンクション）になる。
-// 将来「北海道」「四国」「九州」の路線を追加する場合はこの配列に新しい路線を足すだけでよい。
+// mode: "rail"(鉄道) / "highway"(高速道路) / 配列で両方 / "flight"(空路・沖縄のみの例外)
+// density: 都市間で「道中イベント」が起きやすいかどうかの目安（0=幹線で少ない…3=特別区間で多い）
+// special: true の区間は海峡・橋・トンネルなど特別な道中イベント演出を使う
+// 将来、都市・路線を追加する場合はこの配列に新しい路線オブジェクトを足すだけでよい。
 const LINES = [
-  { key: "tokaido", name: "東海道ライン", cities: ["tokyo", "yokohama", "odawara", "shizuoka", "hamamatsu", "nagoya"] },
-  { key: "tohoku_shinkansen", name: "東北ライン", cities: ["tokyo", "utsunomiya", "fukushima", "sendai", "morioka", "aomori"] },
-  { key: "joetsu", name: "上越ライン", cities: ["tokyo", "saitama", "takasaki", "niigata"] },
-  { key: "chuo", name: "中央ライン", cities: ["tokyo", "kofu", "nagano"] },
-  { key: "hokuriku", name: "北陸ライン", cities: ["nagano", "toyama", "kanazawa", "kyoto"] },
-  { key: "tokai_branch", name: "東海支線", cities: ["nagoya", "gifu"] },
-  { key: "kinki", name: "近畿ライン", cities: ["nagoya", "kyoto", "osaka", "kobe"] },
-  { key: "kinki_branch", name: "近畿支線", cities: ["osaka", "nara"] },
-  { key: "sanyo", name: "山陽ライン", cities: ["osaka", "okayama", "hiroshima", "yamaguchi"] },
-  { key: "sanin_branch", name: "山陰支線", cities: ["okayama", "tottori"] },
-  { key: "chiba_branch", name: "総武支線", cities: ["tokyo", "chiba"] },
+  { key: "tokaido", name: "東海道ライン", mode: "rail", density: 0, cities: ["tokyo", "yokohama", "odawara", "shizuoka", "hamamatsu", "nagoya"] },
+  { key: "tohoku_shinkansen", name: "東北ライン", mode: "rail", density: 0, cities: ["tokyo", "utsunomiya", "fukushima", "sendai", "morioka", "aomori"] },
+  { key: "joetsu", name: "上越ライン", mode: "rail", density: 1, cities: ["tokyo", "saitama", "takasaki", "niigata"] },
+  { key: "chuo", name: "中央ライン", mode: "rail", density: 2, cities: ["tokyo", "kofu", "nagano"] },
+  { key: "hokuriku", name: "北陸ライン", mode: "rail", density: 1, cities: ["nagano", "toyama", "kanazawa", "kyoto"] },
+  { key: "tokai_branch", name: "東海支線", mode: "rail", density: 1, cities: ["nagoya", "gifu"] },
+  { key: "kinki", name: "近畿ライン", mode: "rail", density: 0, cities: ["nagoya", "kyoto", "osaka", "kobe"] },
+  { key: "kinki_branch", name: "近畿支線", mode: "rail", density: 1, cities: ["osaka", "nara"] },
+  { key: "sanyo", name: "山陽ライン", mode: "rail", density: 0, cities: ["osaka", "okayama", "hiroshima", "yamaguchi"] },
+  { key: "sanin_branch", name: "山陰支線", mode: "rail", density: 2, cities: ["okayama", "tottori"] },
+  { key: "chiba_branch", name: "総武支線", mode: "rail", density: 1, cities: ["tokyo", "chiba"] },
+
+  { key: "hokkaido_main", name: "北海道本線", mode: "rail", density: 2, cities: ["hakodate", "sapporo", "asahikawa"] },
+  { key: "hokkaido_east", name: "道東ライン", mode: "rail", density: 2, cities: ["sapporo", "kushiro"] },
+  { key: "seikan", name: "青函トンネル", mode: "rail", density: 3, special: "tunnel", cities: ["aomori", "hakodate"] },
+
+  { key: "shikoku_tokushima", name: "高徳ライン", mode: "rail", density: 1, cities: ["takamatsu", "tokushima"] },
+  { key: "shikoku_matsuyama", name: "予讃ライン", mode: "rail", density: 2, cities: ["takamatsu", "matsuyama"] },
+  { key: "shikoku_kochi", name: "土讃ライン", mode: "rail", density: 2, cities: ["takamatsu", "kochi"] },
+  { key: "seto_bridge", name: "瀬戸大橋", mode: ["rail", "highway"], density: 3, special: "bridge", cities: ["okayama", "takamatsu"] },
+
+  { key: "kyushu_shinkansen", name: "九州新幹線", mode: "rail", density: 0, cities: ["fukuoka", "kumamoto", "kagoshima"] },
+  { key: "kyushu_kitakyushu", name: "鹿児島本線", mode: "rail", density: 1, cities: ["fukuoka", "kitakyushu"] },
+  { key: "kyushu_nagasaki", name: "長崎ライン", mode: "rail", density: 1, cities: ["fukuoka", "nagasaki"] },
+  { key: "kyushu_oita", name: "日豊ライン北", mode: "rail", density: 1, cities: ["fukuoka", "oita"] },
+  { key: "kyushu_east", name: "日豊ライン南", mode: "rail", density: 2, cities: ["oita", "miyazaki", "kagoshima"] },
+  { key: "kanmon", name: "関門海峡", mode: ["rail", "highway"], density: 3, special: "strait", cities: ["kitakyushu", "yamaguchi"] },
+
+  { key: "okinawa_flight", name: "沖縄航空路", mode: "flight", density: 3, special: "flight", cities: ["kagoshima", "naha"] },
 ];
 
 const CITIES = [
@@ -407,6 +431,213 @@ const CITIES = [
       { name: "秋吉台観光開発", icon: "⛰️", tier: "B", price: 20000, yieldPct: 15, revenue: 3000 },
       { name: "関門海峡物流拠点", icon: "🌉", tier: "C", price: 170000, yieldPct: 10, revenue: 17000 },
       { name: "瀬戸内石油化学メガコンビナート", icon: "🏭", tier: "D", price: 2000000, yieldPct: 7, revenue: 140000, unlock: { quiz: 3 } },
+    ],
+  },
+
+  // ================= 北海道 =================
+  {
+    key: "sapporo", name: "札幌", icon: "❄️", region: "hokkaido", size: "metro",
+    catch: "雪まつりとビール、北海道の中心都市！",
+    properties: [
+      { name: "味噌ラーメン店", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
+      { name: "お土産洋菓子店", icon: "🍬", tier: "A", price: 1500, yieldPct: 16, revenue: 240 },
+      { name: "雪まつり観光公社", icon: "⛄", tier: "B", price: 35000, yieldPct: 14, revenue: 4900 },
+      { name: "乳製品加工工場", icon: "🥛", tier: "B", price: 45000, yieldPct: 13, revenue: 5850 },
+      { name: "札幌ビール工場", icon: "🍺", tier: "C", price: 400000, yieldPct: 10, revenue: 40000 },
+      { name: "札幌ITタワー", icon: "💻", tier: "C", price: 550000, yieldPct: 9, revenue: 49500 },
+      { name: "新千歳空港物流拠点", icon: "✈️", tier: "D", price: 6000000, yieldPct: 7, revenue: 420000, unlock: { quiz: 3 } },
+      { name: "大通公園メガ観光複合施設", icon: "🎪", tier: "E", price: 150000000, yieldPct: 4, revenue: 6000000, unlock: { quiz: 10, ownRatio: 0.7 } },
+    ],
+  },
+  {
+    key: "hakodate", name: "函館", icon: "🌃", region: "hokkaido", size: "town",
+    catch: "夜景とイカ漁、五稜郭の港町！",
+    properties: [
+      { name: "イカ漁業組合", icon: "🦑", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
+      { name: "函館朝市の海鮮店", icon: "🐟", tier: "A", price: 1300, yieldPct: 17, revenue: 221 },
+      { name: "夜景観光ロープウェイ", icon: "🌃", tier: "B", price: 20000, yieldPct: 15, revenue: 3000 },
+      { name: "五稜郭土産物街", icon: "⭐", tier: "B", price: 24000, yieldPct: 14, revenue: 3360 },
+      { name: "函館漁港水産加工団地", icon: "🏭", tier: "C", price: 150000, yieldPct: 10, revenue: 15000 },
+      { name: "青函連絡船記念物流拠点", icon: "🚢", tier: "D", price: 1700000, yieldPct: 7, revenue: 119000, unlock: { quiz: 3 } },
+    ],
+  },
+  {
+    key: "asahikawa", name: "旭川", icon: "🪑", region: "hokkaido", size: "town",
+    catch: "家具と動物園、雪の町！",
+    properties: [
+      { name: "しょうゆラーメン店", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
+      { name: "動物園グッズショップ", icon: "🐻‍❄️", tier: "A", price: 1300, yieldPct: 17, revenue: 221 },
+      { name: "旭川家具工房", icon: "🪑", tier: "B", price: 22000, yieldPct: 15, revenue: 3300 },
+      { name: "雪氷冷熱利用工場", icon: "❄️", tier: "B", price: 20000, yieldPct: 15, revenue: 3000 },
+      { name: "旭川木工産業団地", icon: "🏭", tier: "C", price: 140000, yieldPct: 10, revenue: 14000 },
+      { name: "大雪山観光リゾート開発", icon: "🏔️", tier: "D", price: 1600000, yieldPct: 7, revenue: 112000, unlock: { quiz: 3 } },
+    ],
+  },
+  {
+    key: "kushiro", name: "釧路", icon: "🦢", region: "hokkaido", size: "town",
+    catch: "漁業と湿原、酪農の町！",
+    properties: [
+      { name: "毛ガニ漁業組合", icon: "🦀", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
+      { name: "釧路湿原観光船", icon: "🛶", tier: "A", price: 1300, yieldPct: 17, revenue: 221 },
+      { name: "酪農牧場グループ", icon: "🐄", tier: "B", price: 20000, yieldPct: 15, revenue: 3000 },
+      { name: "サンマ加工工場", icon: "🐟", tier: "B", price: 24000, yieldPct: 14, revenue: 3360 },
+      { name: "釧路漁港水産コンビナート", icon: "🏭", tier: "C", price: 150000, yieldPct: 10, revenue: 15000 },
+      { name: "釧路湿原メガリゾート", icon: "🦢", tier: "D", price: 1600000, yieldPct: 7, revenue: 112000, unlock: { quiz: 3 } },
+    ],
+  },
+  // ================= 四国 =================
+  {
+    key: "takamatsu", name: "高松", icon: "🍜", region: "shikoku", size: "hub",
+    catch: "うどんと瀬戸内海、四国の玄関口！",
+    properties: [
+      { name: "讃岐うどん店", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
+      { name: "盆栽輸出組合", icon: "🌳", tier: "B", price: 30000, yieldPct: 14, revenue: 4200 },
+      { name: "高松港フェリーターミナル", icon: "⛴️", tier: "B", price: 35000, yieldPct: 13, revenue: 4550 },
+      { name: "瀬戸内オリーブ農園グループ", icon: "🫒", tier: "C", price: 200000, yieldPct: 11, revenue: 22000 },
+      { name: "高松港湾物流センター", icon: "🚚", tier: "C", price: 300000, yieldPct: 10, revenue: 30000 },
+      { name: "瀬戸大橋物流ハブ", icon: "🌉", tier: "D", price: 3000000, yieldPct: 7, revenue: 210000, unlock: { quiz: 3 } },
+      { name: "瀬戸内海リゾート開発", icon: "🏝️", tier: "E", price: 60000000, yieldPct: 4, revenue: 2400000, unlock: { quiz: 10, ownRatio: 0.7 } },
+    ],
+  },
+  {
+    key: "matsuyama", name: "松山", icon: "♨️", region: "shikoku", size: "hub",
+    catch: "みかんと道後温泉、四国最大の城下町！",
+    properties: [
+      { name: "みかん農園", icon: "🍊", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
+      { name: "道後温泉旅館組合", icon: "♨️", tier: "B", price: 30000, yieldPct: 14, revenue: 4200 },
+      { name: "今治タオル工房", icon: "🧺", tier: "B", price: 25000, yieldPct: 15, revenue: 3750 },
+      { name: "みかんジュース加工工場", icon: "🍊", tier: "C", price: 180000, yieldPct: 11, revenue: 19800 },
+      { name: "松山城下観光開発", icon: "🏯", tier: "C", price: 250000, yieldPct: 10, revenue: 25000 },
+      { name: "瀬戸内造船産業団地", icon: "🚢", tier: "D", price: 2600000, yieldPct: 7, revenue: 182000, unlock: { quiz: 3 } },
+      { name: "道後温泉メガリゾート", icon: "♨️", tier: "E", price: 55000000, yieldPct: 4, revenue: 2200000, unlock: { quiz: 10, ownRatio: 0.7 } },
+    ],
+  },
+  {
+    key: "kochi", name: "高知", icon: "🐟", region: "shikoku", size: "town",
+    catch: "カツオと坂本龍馬、太平洋の町！",
+    properties: [
+      { name: "カツオのたたき専門店", icon: "🐟", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
+      { name: "ユズ農園", icon: "🍋", tier: "A", price: 1300, yieldPct: 17, revenue: 221 },
+      { name: "高知漁港漁業組合", icon: "🎣", tier: "B", price: 22000, yieldPct: 15, revenue: 3300 },
+      { name: "土佐林業組合", icon: "🌲", tier: "B", price: 20000, yieldPct: 15, revenue: 3000 },
+      { name: "桂浜観光開発", icon: "🌊", tier: "C", price: 140000, yieldPct: 10, revenue: 14000 },
+      { name: "高知県産業振興センター", icon: "🏭", tier: "D", price: 1600000, yieldPct: 7, revenue: 112000, unlock: { quiz: 3 } },
+    ],
+  },
+  {
+    key: "tokushima", name: "徳島", icon: "💃", region: "shikoku", size: "town",
+    catch: "阿波おどりとすだち、渦潮の町！",
+    properties: [
+      { name: "すだち農園", icon: "🍈", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
+      { name: "阿波おどり観光組合", icon: "💃", tier: "A", price: 1300, yieldPct: 17, revenue: 221 },
+      { name: "藍染工房", icon: "🎨", tier: "B", price: 20000, yieldPct: 15, revenue: 3000 },
+      { name: "LED関連工場", icon: "💡", tier: "B", price: 30000, yieldPct: 13, revenue: 3900 },
+      { name: "鳴門海峡観光開発", icon: "🌀", tier: "C", price: 150000, yieldPct: 10, revenue: 15000 },
+      { name: "徳島LED産業団地", icon: "🏭", tier: "D", price: 1700000, yieldPct: 7, revenue: 119000, unlock: { quiz: 3 } },
+    ],
+  },
+  // ================= 九州 =================
+  {
+    key: "fukuoka", name: "福岡", icon: "🍜", region: "kyushu", size: "metro",
+    catch: "とんこつラーメンと明太子、九州最大の商都！",
+    properties: [
+      { name: "とんこつラーメン店", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
+      { name: "明太子専門店", icon: "🌶️", tier: "A", price: 1500, yieldPct: 16, revenue: 240 },
+      { name: "中洲屋台グループ", icon: "🏮", tier: "B", price: 30000, yieldPct: 14, revenue: 4200 },
+      { name: "博多織工房", icon: "🧵", tier: "B", price: 25000, yieldPct: 15, revenue: 3750 },
+      { name: "福岡ITベンチャー団地", icon: "💻", tier: "C", price: 400000, yieldPct: 10, revenue: 40000 },
+      { name: "博多港コンテナターミナル", icon: "⚓", tier: "C", price: 550000, yieldPct: 9, revenue: 49500 },
+      { name: "福岡空港物流ハブ", icon: "✈️", tier: "D", price: 6500000, yieldPct: 7, revenue: 455000, unlock: { quiz: 3 } },
+      { name: "博多メガシティ開発", icon: "🏙️", tier: "E", price: 160000000, yieldPct: 4, revenue: 6400000, unlock: { quiz: 10, ownRatio: 0.7 } },
+    ],
+  },
+  {
+    key: "kitakyushu", name: "北九州", icon: "🏭", region: "kyushu", size: "hub",
+    catch: "製鉄と関門海峡、工業の町！",
+    properties: [
+      { name: "門司港レトロ土産店", icon: "🏮", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
+      { name: "製鉄関連工場", icon: "🏭", tier: "B", price: 32000, yieldPct: 14, revenue: 4480 },
+      { name: "若松エコタウン事業", icon: "♻️", tier: "B", price: 28000, yieldPct: 15, revenue: 4200 },
+      { name: "北九州工業地帯コンビナート", icon: "⚗️", tier: "C", price: 350000, yieldPct: 10, revenue: 35000 },
+      { name: "関門海峡物流拠点", icon: "🌉", tier: "C", price: 280000, yieldPct: 10, revenue: 28000 },
+      { name: "北九州製鉄メガ工場", icon: "🏭", tier: "D", price: 3500000, yieldPct: 7, revenue: 245000, unlock: { quiz: 3 } },
+      { name: "北九州臨海メガ産業団地", icon: "🏭", tier: "E", price: 65000000, yieldPct: 4, revenue: 2600000, unlock: { quiz: 10, ownRatio: 0.7 } },
+    ],
+  },
+  {
+    key: "kumamoto", name: "熊本", icon: "🐴", region: "kyushu", size: "hub",
+    catch: "馬肉と半導体、阿蘇の城下町！",
+    properties: [
+      { name: "馬肉料理店", icon: "🐴", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
+      { name: "半導体部品工場", icon: "💾", tier: "B", price: 34000, yieldPct: 14, revenue: 4760 },
+      { name: "阿蘇観光牧場", icon: "🐄", tier: "B", price: 22000, yieldPct: 15, revenue: 3300 },
+      { name: "熊本城下観光開発", icon: "🏯", tier: "C", price: 220000, yieldPct: 10, revenue: 22000 },
+      { name: "熊本半導体産業団地", icon: "💾", tier: "C", price: 300000, yieldPct: 9, revenue: 27000 },
+      { name: "阿蘇メガリゾート開発", icon: "🌋", tier: "D", price: 2800000, yieldPct: 7, revenue: 196000, unlock: { quiz: 3 } },
+      { name: "熊本半導体メガファブ", icon: "💻", tier: "E", price: 58000000, yieldPct: 4, revenue: 2320000, unlock: { quiz: 10, ownRatio: 0.7 } },
+    ],
+  },
+  {
+    key: "nagasaki", name: "長崎", icon: "🍰", region: "kyushu", size: "town",
+    catch: "カステラと造船、異国情緒の港町！",
+    properties: [
+      { name: "カステラ専門店", icon: "🍰", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
+      { name: "ちゃんぽん店", icon: "🍜", tier: "A", price: 1300, yieldPct: 17, revenue: 221 },
+      { name: "長崎造船所関連工場", icon: "🚢", tier: "B", price: 30000, yieldPct: 14, revenue: 4200 },
+      { name: "五島漁業組合", icon: "🐟", tier: "B", price: 22000, yieldPct: 15, revenue: 3300 },
+      { name: "異国情緒観光開発", icon: "⛪", tier: "C", price: 150000, yieldPct: 10, revenue: 15000 },
+      { name: "長崎造船産業団地", icon: "🚢", tier: "D", price: 1800000, yieldPct: 7, revenue: 126000, unlock: { quiz: 3 } },
+    ],
+  },
+  {
+    key: "oita", name: "大分", icon: "♨️", region: "kyushu", size: "town",
+    catch: "別府温泉とかぼす、一村一品の町！",
+    properties: [
+      { name: "かぼす農園", icon: "🍋", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
+      { name: "別府温泉旅館", icon: "♨️", tier: "A", price: 1400, yieldPct: 16, revenue: 224 },
+      { name: "一村一品産業組合", icon: "🏘️", tier: "B", price: 20000, yieldPct: 15, revenue: 3000 },
+      { name: "関アジ関サバ漁業組合", icon: "🐟", tier: "B", price: 24000, yieldPct: 14, revenue: 3360 },
+      { name: "別府温泉観光開発", icon: "♨️", tier: "C", price: 150000, yieldPct: 10, revenue: 15000 },
+      { name: "大分臨海工業団地", icon: "🏭", tier: "D", price: 1700000, yieldPct: 7, revenue: 119000, unlock: { quiz: 3 } },
+    ],
+  },
+  {
+    key: "miyazaki", name: "宮崎", icon: "🥭", region: "kyushu", size: "town",
+    catch: "マンゴーと肉牛、南国リゾートの町！",
+    properties: [
+      { name: "マンゴー農園", icon: "🥭", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
+      { name: "宮崎牛牧場", icon: "🐄", tier: "A", price: 1500, yieldPct: 16, revenue: 240 },
+      { name: "南国フルーツ加工工場", icon: "🍍", tier: "B", price: 20000, yieldPct: 15, revenue: 3000 },
+      { name: "神話観光開発", icon: "⛩️", tier: "B", price: 22000, yieldPct: 15, revenue: 3300 },
+      { name: "宮崎リゾート開発", icon: "🏖️", tier: "C", price: 140000, yieldPct: 10, revenue: 14000 },
+      { name: "宮崎農業メガコンビナート", icon: "🌾", tier: "D", price: 1600000, yieldPct: 7, revenue: 112000, unlock: { quiz: 3 } },
+    ],
+  },
+  {
+    key: "kagoshima", name: "鹿児島", icon: "🌋", region: "kyushu", size: "hub",
+    catch: "桜島と黒豚、焼酎の町！",
+    properties: [
+      { name: "黒豚料理店", icon: "🐷", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
+      { name: "焼酎蔵元", icon: "🍶", tier: "B", price: 28000, yieldPct: 14, revenue: 3920 },
+      { name: "さつまいも農園グループ", icon: "🍠", tier: "B", price: 24000, yieldPct: 15, revenue: 3600 },
+      { name: "桜島観光開発", icon: "🌋", tier: "C", price: 200000, yieldPct: 10, revenue: 20000 },
+      { name: "鹿児島港フェリーターミナル", icon: "⛴️", tier: "C", price: 260000, yieldPct: 9, revenue: 23400 },
+      { name: "鹿児島畜産メガコンビナート", icon: "🐷", tier: "D", price: 2600000, yieldPct: 7, revenue: 182000, unlock: { quiz: 3 } },
+      { name: "桜島・霧島メガリゾート", icon: "🌋", tier: "E", price: 52000000, yieldPct: 4, revenue: 2080000, unlock: { quiz: 10, ownRatio: 0.7 } },
+    ],
+  },
+  // ================= 沖縄 =================
+  {
+    key: "naha", name: "那覇", icon: "🌺", region: "okinawa", size: "hub",
+    catch: "南国リゾートと琉球文化の島！",
+    properties: [
+      { name: "シーサー工房", icon: "🦁", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
+      { name: "泡盛蔵元", icon: "🍶", tier: "B", price: 30000, yieldPct: 14, revenue: 4200 },
+      { name: "サトウキビ農園グループ", icon: "🎋", tier: "B", price: 24000, yieldPct: 15, revenue: 3600 },
+      { name: "国際通り土産物街", icon: "🌺", tier: "C", price: 220000, yieldPct: 10, revenue: 22000 },
+      { name: "那覇港クルーズターミナル", icon: "🚢", tier: "C", price: 280000, yieldPct: 9, revenue: 25200 },
+      { name: "沖縄リゾートホテル開発", icon: "🏖️", tier: "D", price: 3000000, yieldPct: 7, revenue: 210000, unlock: { quiz: 3 } },
+      { name: "沖縄メガリゾートアイランド開発", icon: "🏝️", tier: "E", price: 62000000, yieldPct: 4, revenue: 2480000, unlock: { quiz: 10, ownRatio: 0.7 } },
     ],
   },
 ];

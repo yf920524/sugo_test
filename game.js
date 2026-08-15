@@ -4,7 +4,7 @@
    保存処理は save.js に分離してある。ここでは「動かし方」だけを扱う。
    ============================================================ */
 
-const START_CASH = 3000; // 万円
+const START_CASH = 10000; // 万円 = 1億円
 const GOAL_REVENUE = 100000000; // 万円 = 1兆円
 const MONTH_ORDER = [4, 5, 6, 7, 8, 9, 10, 11, 12, 1, 2, 3]; // 4月始まり年度
 const MILESTONES = [
@@ -16,6 +16,13 @@ const DICE_FACES = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
 const REGION_BONUS_PCT = 25;
 const EVENT_CHANCE = 0.22;
 const BONUS_CHALLENGE_CHANCE = 0.25;
+const MODE_ICON = { rail: "🚄", highway: "🛣️", flight: "✈️" };
+const START_DASH_TURNS = 6; // 序盤テンポ改善：最初の数ターンはクイズ報酬を厚くする
+const START_DASH_CASH_FLOOR = 1500; // 万円
+const NORMAL_CASH_FLOOR = 500; // 万円
+const FIRST_VISIT_BONUS = 800; // 万円：はじめて訪れた都市でもらえるボーナス
+const FIRST_PURCHASE_BONUS = 2000; // 万円：はじめての物件購入でもらえるボーナス
+const RESCUE_GRANT = 1500; // 万円：どこも買えないときの臨時ビジネスチャンス
 
 // ---- DOM 参照 ----
 let startScreen, gameScreen, continueBtn, newGameBtn;
@@ -49,6 +56,9 @@ function freshState() {
     quizRecent: [],
     logHistory: [],
     pendingKessan: false,
+    turnCount: 0,
+    visitedCities: new Set(),
+    missionsAchieved: new Set(),
   };
 }
 let state = freshState();
@@ -297,7 +307,8 @@ async function movePlayerAlongLine(neighbor, steps) {
   }
   const justClosedFiscalYear = advanceMonth();
   state.pendingKessan = state.pendingKessan || justClosedFiscalYear;
-  resolveCellArrival(state.currentCity);
+  state.turnCount++;
+  resolveCellArrival(state.currentCity, line);
 }
 
 function rollDiceThenMove(neighbor) {
@@ -335,8 +346,7 @@ function showKessanModal() {
   const after = before + b.totalProfit;
   const line = (label, val, cls) =>
     val ? `<div class="kessan-line ${cls || ""}"><span>${label}</span><span>${val >= 0 ? "+" : ""}${fmtMoney(val)}</span></div>` : "";
-  modalRoot.classList.remove("hidden");
-  modalBox.innerHTML = `
+  setModalContent(`
     <div class="modal-title" style="justify-content:center;">📊 第${state.year}期 決算発表</div>
     <div class="kessan-lines">
       <div class="kessan-line"><span>物件基本収益</span><span>+${fmtMoney(b.base)}</span></div>
@@ -348,7 +358,7 @@ function showKessanModal() {
     <div class="kessan-total">今期利益　<strong>${b.totalProfit >= 0 ? "+" : ""}${fmtMoney(b.totalProfit)}</strong></div>
     <div class="kessan-cashflow">現金　${fmtMoney(before)} → <strong>${fmtMoney(after)}</strong></div>
     <button class="modal-close-btn primary" data-action="kessan-confirm">つぎの期へ！</button>
-  `;
+  `);
 }
 
 function confirmKessan() {
@@ -381,6 +391,11 @@ function renderHeader() {
   victoryBadge.classList.toggle("hidden", !state.victoryAchieved);
 }
 
+function modeIcons(mode) {
+  const modes = Array.isArray(mode) ? mode : [mode];
+  return modes.map((m) => MODE_ICON[m] || "").join("");
+}
+
 function renderDirectionButtons() {
   const neighbors = getNeighbors(state.currentCity);
   const many = neighbors.length > 2;
@@ -388,9 +403,13 @@ function renderDirectionButtons() {
   directionButtons.innerHTML = neighbors
     .map((n, i) => {
       const c = getCity(n.cityKey);
+      const line = LINES.find((l) => l.key === n.lineKey);
       const spanFull = many && neighbors.length % 2 === 1 && i === neighbors.length - 1 ? ' style="grid-column:1 / -1;"' : "";
+      const density = line ? line.density : 0;
+      const dots = "・".repeat(density);
       return `<button class="dir-btn ${neighbors.length === 1 ? "solo" : ""}" data-city-key="${n.cityKey}" data-line-key="${n.lineKey}" data-dir="${n.dir}"${spanFull}>
-        <span class="dir-icon">${c.icon}</span>${c.name}方面へ 🎲
+        <span class="dir-icon">${c.icon}</span>${c.name}方面へ
+        <span class="dir-line-info">${modeIcons(line ? line.mode : "rail")}${dots ? `<span class="dir-tile-hint">${dots}</span>` : ""} 🎲</span>
       </button>`;
     })
     .join("");
@@ -418,6 +437,10 @@ function renderCityPanel() {
 function setModalContent(html) {
   modalBox.innerHTML = html;
   modalRoot.classList.remove("hidden");
+  modalBox.scrollTop = 0;
+  requestAnimationFrame(() => {
+    modalBox.scrollTop = 0;
+  });
 }
 function setAfterClose(fn) {
   pendingAfterClose = fn;
@@ -452,18 +475,110 @@ function afterTurnComplete() {
   autoSave();
 }
 
-function resolveCellArrival(cityKey) {
+function resolveCellArrival(cityKey, line) {
   renderHeader();
-  maybeTriggerEvent(cityKey, () => {
-    handleCityArrival(cityKey);
+  maybeTriggerTileEvent(line, (tileFired) => {
+    if (tileFired) {
+      handleCityArrival(cityKey);
+    } else {
+      maybeTriggerEvent(cityKey, () => handleCityArrival(cityKey));
+    }
   });
+}
+
+function getCheapestAvailablePriceNearby() {
+  const candidates = [state.currentCity, ...getNeighbors(state.currentCity).map((n) => n.cityKey)];
+  let min = Infinity;
+  candidates.forEach((ck) => {
+    const city = getCity(ck);
+    city.properties.forEach((p, i) => {
+      if (!state.owned.has(propKey(ck, i)) && !isPropertyLocked(ck, i) && p.price < min) min = p.price;
+    });
+  });
+  return min;
 }
 
 function handleCityArrival(cityKey) {
   state.currentCity = cityKey;
   renderCityDisplayOnly();
   addLog(`📍 ${getCity(cityKey).name}に到着。`, "highlight");
-  showQuizModal(cityKey, () => openCityShop(cityKey), false);
+
+  const extraBanners = [];
+  if (!state.visitedCities.has(cityKey)) {
+    state.visitedCities.add(cityKey);
+    state.cash += FIRST_VISIT_BONUS;
+    addLog(`🎁 ${getCity(cityKey).name}へはじめて訪問！+${fmtMoney(FIRST_VISIT_BONUS)}`, "good");
+    extraBanners.push(`🎁 はじめて訪れた街！ 訪問ボーナス +${fmtMoney(FIRST_VISIT_BONUS)}`);
+    renderHeader();
+  }
+  const nearbyMin = getCheapestAvailablePriceNearby();
+  if (nearbyMin !== Infinity && state.cash < nearbyMin) {
+    state.cash += RESCUE_GRANT;
+    addLog(`🎁 臨時ビジネスチャンス！+${fmtMoney(RESCUE_GRANT)}`, "good");
+    extraBanners.push(`🎁 臨時ビジネスチャンス！ +${fmtMoney(RESCUE_GRANT)}`);
+    renderHeader();
+  }
+
+  showQuizModal(cityKey, () => openCityShop(cityKey), false, extraBanners);
+}
+
+// ============================================================
+// 道中イベント（タイル） - 主要幹線ほど少なく、地方路線・特別区間ほど起きやすい
+// ============================================================
+function rollTileEvent(line) {
+  if (!line) return null;
+  const chance = TILE_DENSITY_CHANCE[line.density] || 0.1;
+  if (Math.random() > chance) return null;
+  const pool = line.special ? SPECIAL_TILES[line.special] : GENERIC_TILES;
+  if (!pool || !pool.length) return null;
+  return pick(pool);
+}
+
+function applyTileEffect(tile) {
+  const eff = tile.effect;
+  if (eff.type === "cash") {
+    const amt = randInt(eff.min, eff.max);
+    state.cash += amt;
+    return { text: `+${fmtMoney(amt)}`, good: true };
+  }
+  if (eff.type === "cashMinus") {
+    const amt = randInt(eff.min, eff.max);
+    state.cash = Math.max(0, state.cash - amt);
+    return { text: `-${fmtMoney(amt)}`, good: false };
+  }
+  if (eff.type === "discount") {
+    state.discountCoupons++;
+    return { text: "🎟️ 次の購入が3割引になるクーポンをゲット！", good: true };
+  }
+  if (eff.type === "kessanBonus") {
+    const pct = randInt(eff.min, eff.max);
+    state.kessanBonusPct += pct;
+    return { text: `📊 今期決算 +${pct}%`, good: true };
+  }
+  if (eff.type === "unlockPoint") {
+    const ck = state.currentCity;
+    state.cityQuizCorrect[ck] = (state.cityQuizCorrect[ck] || 0) + 1;
+    return { text: `🔓 ${getCity(ck).name}のアンロック進捗 +1`, good: true };
+  }
+  return { text: "", good: true };
+}
+
+function maybeTriggerTileEvent(line, cont) {
+  const tile = rollTileEvent(line);
+  if (!tile) {
+    cont(false);
+    return;
+  }
+  const result = applyTileEffect(tile);
+  addLog(`${tile.icon} ${tile.name}${tile.desc ? "：" + tile.desc : ""}（${result.text}）`, result.good ? "good" : "bad");
+  setModalContent(`
+    <div class="toast-icon">${tile.icon}</div>
+    <div class="modal-title" style="justify-content:center;">${tile.name}</div>
+    ${tile.desc ? `<div class="toast-text">${tile.desc}</div>` : ""}
+    <div class="toast-amount ${result.good ? "good" : "bad"}">${result.text}</div>
+    <button class="modal-close-btn primary" data-action="close-modal">なるほど！</button>
+  `);
+  setAfterClose(() => cont(true));
 }
 
 // ============================================================
@@ -534,9 +649,10 @@ function pickFromPool(pool) {
 
 function applyQuizReward(isBonus) {
   const mult = isBonus ? 2.5 : 1;
+  const floor = (state.turnCount <= START_DASH_TURNS ? START_DASH_CASH_FLOOR : NORMAL_CASH_FLOOR) * mult;
   const roll = Math.random();
   if (roll < 0.4) {
-    const amt = Math.max(300, Math.round(((state.cash * 0.15 * mult) / 10)) * 10);
+    const amt = Math.max(floor, Math.round(((state.cash * 0.15 * mult) / 10)) * 10);
     state.cash += amt;
     return `💰 現金 +${fmtMoney(amt)} ゲット！`;
   } else if (roll < 0.7) {
@@ -550,7 +666,7 @@ function applyQuizReward(isBonus) {
   }
 }
 
-function showQuizModal(cityKey, onDone, isBonus) {
+function showQuizModal(cityKey, onDone, isBonus, extraBanners) {
   quizOnDone = onDone;
   quizCityKey = cityKey;
   quizIsBonus = !!isBonus;
@@ -560,7 +676,11 @@ function showQuizModal(cityKey, onDone, isBonus) {
   currentQuizOptions = shuffle(q.options.map((text, i) => ({ text, isCorrect: i === q.correct })));
   state.quizAskedTotal++;
   const hint = !quizIsBonus ? getUnlockHint(cityKey) : null;
-  const hintHtml = hint && hint.quizRemain <= 2 ? `<div class="hint-banner">${unlockHintText(hint)}</div>` : "";
+  const missionHint = !quizIsBonus ? getNearestMissionHint(cityKey) : null;
+  const banners = [...(extraBanners || [])];
+  if (hint && hint.quizRemain <= 2) banners.push(unlockHintText(hint));
+  if (missionHint) banners.push(missionHint);
+  const hintHtml = banners.map((b) => `<div class="hint-banner">${b}</div>`).join("");
   const optsHtml = currentQuizOptions
     .map((o, i) => `<button class="quiz-opt" data-action="quiz-opt" data-idx="${i}">${o.text}</button>`)
     .join("");
@@ -635,6 +755,7 @@ let pendingBonusOnDone = null;
 function openCityShop(cityKey) {
   activeCityKey = cityKey;
   shopCloseCallback = afterTurnComplete;
+  shopTierFilter = "all";
   renderCityShopContent(cityKey);
   setAfterClose(shopCloseCallback);
 }
@@ -642,18 +763,22 @@ function openCityShop(cityKey) {
 function showShopStandalone() {
   activeCityKey = state.currentCity;
   shopCloseCallback = null;
+  shopTierFilter = "all";
   renderCityShopContent(state.currentCity);
   setAfterClose(null);
 }
 
+let shopTierFilter = "all";
+
 function renderCityShopContent(cityKey) {
-  modalRoot.classList.remove("hidden");
-  modalBox.innerHTML = buildCityShopHtml(cityKey);
+  setModalContent(buildCityShopHtml(cityKey));
 }
 
 function isPropertyInAchievedCombo(cityKey, idx) {
   return COMBOS.some((combo) => state.comboAchieved.has(combo.key) && combo.members.some((m) => m.city === cityKey && m.idx === idx));
 }
+
+const TIER_LABEL = { A: "1000万〜", B: "1億〜", C: "10億〜", D: "100億〜", E: "1000億〜" };
 
 function buildCityShopHtml(cityKey) {
   const city = getCity(cityKey);
@@ -669,15 +794,27 @@ function buildCityShopHtml(cityKey) {
     state.discountCoupons > 0
       ? `<div class="modal-sub">🎟️ 割引クーポン ${state.discountCoupons}枚所持中（次の購入から自動適用）</div>`
       : "";
-  const propsHtml = city.properties
-    .map((p, i) => {
+
+  const tiersPresent = [...new Set(city.properties.map((p) => p.tier))];
+  if (!tiersPresent.includes(shopTierFilter) && shopTierFilter !== "all") shopTierFilter = "all";
+  const tabsHtml = `<div class="tier-tabs">
+    <button class="tier-tab ${shopTierFilter === "all" ? "active" : ""}" data-action="shop-tier" data-tier="all">すべて</button>
+    ${tiersPresent.map((t) => `<button class="tier-tab ${shopTierFilter === t ? "active" : ""}" data-action="shop-tier" data-tier="${t}">${t}（${TIER_LABEL[t]}）</button>`).join("")}
+  </div>`;
+
+  const visibleProps = city.properties
+    .map((p, i) => ({ p, i }))
+    .filter(({ p }) => shopTierFilter === "all" || p.tier === shopTierFilter);
+
+  const propsHtml = visibleProps
+    .map(({ p, i }) => {
       const key = propKey(cityKey, i);
       const owned = state.owned.has(key);
       const locked = !owned && isPropertyLocked(cityKey, i);
       const discounted = !owned && !locked && state.discountCoupons > 0;
       const price = discounted ? Math.round(p.price * 0.7) : p.price;
       const affordable = state.cash >= price;
-      let badge, buyEl;
+      let badge, buyEl, extraLine = "";
       if (owned) {
         const inCombo = isPropertyInAchievedCombo(cityKey, i);
         badge = `<span class="prop-badge owned-badge">購入済み</span>${inCombo ? '<span class="prop-badge combo-badge">🔗 コンボ成立中</span>' : ""}`;
@@ -685,18 +822,24 @@ function buildCityShopHtml(cityKey) {
       } else if (locked) {
         const have = state.cityQuizCorrect[cityKey] || 0;
         const parts = [];
-        if (p.unlock.quiz) parts.push(`クイズ累計${have}/${p.unlock.quiz}問正解`);
+        if (p.unlock.quiz) parts.push(`クイズあと${Math.max(0, p.unlock.quiz - have)}問`);
         if (p.unlock.ownRatio) {
           const r = getNonLandmarkOwnedRatio(cityKey);
           const need = Math.ceil(r.total * p.unlock.ownRatio);
-          parts.push(`通常物件${r.owned}/${need}件所有`);
+          parts.push(`通常物件あと${Math.max(0, need - r.owned)}件`);
         }
         badge = `<span class="prop-badge locked-badge">🔒 ${parts.join("・")}で解禁</span>`;
-        buyEl = `<span class="prop-lock-icon">🔒</span>`;
+        buyEl = `<button class="prop-buy-btn" disabled>🔒 未解禁</button>`;
       } else {
         badge = `<span class="prop-badge">あと${remain}件で完全制覇</span>`;
         const label = discounted ? `割引 ${fmtMoney(price)}` : fmtMoney(price);
-        buyEl = `<button class="prop-buy-btn ${discounted ? "discounted" : ""}" data-action="buy-prop" data-city="${cityKey}" data-idx="${i}" ${affordable ? "" : "disabled"}>${label}</button>`;
+        if (affordable) {
+          buyEl = `<button class="prop-buy-btn ${discounted ? "discounted" : ""}" data-action="buy-prop" data-city="${cityKey}" data-idx="${i}">${label}で購入</button>`;
+          extraLine = `<div class="prop-cashflow">所持金 ${fmtMoney(state.cash)} → ${fmtMoney(state.cash - price)}</div>`;
+        } else {
+          buyEl = `<button class="prop-buy-btn" disabled>${label}</button>`;
+          extraLine = `<div class="prop-cashflow bad">資金不足（あと${fmtMoney(price - state.cash)}）</div>`;
+        }
       }
       return `<div class="prop-card ${owned ? "owned" : ""} ${locked ? "locked" : ""}" data-prop-row="${i}">
         <div class="prop-icon">${p.icon}</div>
@@ -704,6 +847,7 @@ function buildCityShopHtml(cityKey) {
           <div class="prop-name">${p.name}</div>
           <div class="prop-detail">${fmtMoney(p.price)} ／ 年利${p.yieldPct}%（年間収益 ${fmtMoney(p.revenue)}）</div>
           ${badge}
+          ${extraLine}
         </div>
         ${buyEl}
       </div>`;
@@ -714,7 +858,8 @@ function buildCityShopHtml(cityKey) {
     <div class="modal-sub">${city.catch}</div>
     ${banner}
     ${couponNote}
-    <div class="prop-list">${propsHtml}</div>
+    ${tabsHtml}
+    <div class="prop-list">${propsHtml || '<div class="log-empty">このタブには物件がないよ。</div>'}</div>
     <button class="modal-close-btn primary" data-action="close-modal">とじる</button>
   `;
 }
@@ -745,6 +890,8 @@ function buyProperty(cityKey, idx) {
   }
 
   const newCombos = checkNewCombos(cityKey, idx);
+  const newMissions = checkNewMissions(cityKey, idx);
+  newMissions.forEach((m) => addLog(`🎯 ミッション「${m.name}」達成！+${fmtMoney(m.reward)}`, "highlight"));
   const afterLockedLandmarks = getLockedLandmarkIdxs(cityKey);
   const newlyUnlockedLandmarks = beforeLockedLandmarks.filter((i) => !afterLockedLandmarks.includes(i)).map((i) => city.properties[i]);
   if (newlyUnlockedLandmarks.length) {
@@ -753,7 +900,41 @@ function buyProperty(cityKey, idx) {
 
   renderHeader();
   autoSave();
-  handlePurchaseCelebration(city, p, idx, newlyMonopoly, cityKey, newCombos, newlyUnlockedLandmarks);
+  handlePurchaseCelebration(city, p, idx, newlyMonopoly, cityKey, newCombos, newlyUnlockedLandmarks, newMissions);
+}
+
+function checkNewMissions(propCityKey, propIdx) {
+  const newlyCompleted = [];
+  MISSIONS.forEach((mission) => {
+    if (state.missionsAchieved.has(mission.key)) return;
+    const isMember = mission.members.some((m) => m.city === propCityKey && m.idx === propIdx);
+    if (!isMember) return;
+    const allOwned = mission.members.every((m) => state.owned.has(propKey(m.city, m.idx)));
+    if (allOwned) {
+      state.missionsAchieved.add(mission.key);
+      state.cash += mission.reward;
+      newlyCompleted.push(mission);
+    }
+  });
+  return newlyCompleted;
+}
+
+function getMissionProgress(mission) {
+  const owned = mission.members.filter((m) => state.owned.has(propKey(m.city, m.idx))).length;
+  return { owned, total: mission.members.length, remain: mission.members.length - owned };
+}
+
+function getNearestMissionHint(cityKey) {
+  let best = null;
+  MISSIONS.forEach((mission) => {
+    if (state.missionsAchieved.has(mission.key)) return;
+    if (!mission.members.some((m) => m.city === cityKey)) return;
+    const prog = getMissionProgress(mission);
+    if (prog.remain === 0) return;
+    if (!best || prog.remain < best.prog.remain) best = { mission, prog };
+  });
+  if (!best || best.prog.remain > 2) return null;
+  return `🎯 「${best.mission.name}」あと${best.prog.remain}件で達成！（+${fmtMoney(best.mission.reward)}）`;
 }
 
 function checkNewCombos(propCityKey, propIdx) {
@@ -790,8 +971,12 @@ function returnToShop() {
   setAfterClose(shopCloseCallback);
 }
 
-function handlePurchaseCelebration(city, prop, idx, newlyMonopoly, cityKey, newCombos, newlyUnlockedLandmarks) {
+function handlePurchaseCelebration(city, prop, idx, newlyMonopoly, cityKey, newCombos, newlyUnlockedLandmarks, newMissions) {
   const isFirst = !state.firstPurchaseDone;
+  if (isFirst) {
+    state.cash += FIRST_PURCHASE_BONUS;
+    addLog(`🎁 はじめての物件購入ボーナス！+${fmtMoney(FIRST_PURCHASE_BONUS)}`, "good");
+  }
   state.firstPurchaseDone = true;
 
   let newlyRegionConquered = null;
@@ -827,7 +1012,10 @@ function handlePurchaseCelebration(city, prop, idx, newlyMonopoly, cityKey, newC
     achievements.push({ icon: "👑", title: `${city.name} 完全制覇！`, sub: "収益が2倍になったよ！" });
   }
   newCombos.forEach((combo) => {
-    achievements.push({ icon: combo.icon, title: `${combo.name} 成立！`, sub: `関連物件の収益 +${combo.bonusPct}%！` });
+    achievements.push({ icon: combo.icon, title: `${combo.name} 成立！`, sub: `関連物件の収益 +${combo.bonusPct}%！${combo.desc ? " " + combo.desc : ""}` });
+  });
+  (newMissions || []).forEach((mission) => {
+    achievements.push({ icon: mission.icon, title: `ミッション「${mission.name}」達成！`, sub: `${mission.explain}（+${fmtMoney(mission.reward)}）` });
   });
   if (newlyUnlockedLandmarks && newlyUnlockedLandmarks.length) {
     achievements.push({ icon: "🔓", title: "ランドマークがアンロック！", sub: `「${newlyUnlockedLandmarks.map((p) => p.name).join("」「")}」が購入できるようになった！` });
@@ -872,6 +1060,7 @@ function flashAchievementCelebration(achievements) {
       ${extra.map((a) => `<div class="celebrate-sub">${a.icon} ${a.title}</div>`).join("")}
       <button class="modal-close-btn primary" data-action="close-modal">やった！</button>
     </div>`;
+  modalBox.scrollTop = 0;
   setAfterClose(returnToShop);
 }
 
@@ -881,9 +1070,10 @@ function flashFirstPurchaseCelebration() {
       <div class="big-emoji">🏠</div>
       <div class="confetti-row">🎉✨🎉</div>
       <div class="celebrate-title">はじめての物件購入！</div>
-      <div class="celebrate-sub">ここから資産を増やしていこう！</div>
+      <div class="celebrate-sub">お祝いに +${fmtMoney(FIRST_PURCHASE_BONUS)}！ここから資産を増やしていこう！</div>
       <button class="modal-close-btn primary" data-action="close-modal">がんばるぞ！</button>
     </div>`;
+  modalBox.scrollTop = 0;
   setAfterClose(returnToShop);
 }
 
@@ -896,13 +1086,13 @@ function flashBigPurchaseCelebration(prop) {
       <div class="celebrate-sub">「${prop.name}」を手に入れた！</div>
       <button class="modal-close-btn primary" data-action="close-modal">よし！</button>
     </div>`;
+  modalBox.scrollTop = 0;
   setAfterClose(returnToShop);
 }
 
 function showVictoryModal() {
   const assets = state.cash + getOwnedPropertyValueSum();
-  modalRoot.classList.remove("hidden");
-  modalBox.innerHTML = `
+  setModalContent(`
     <div class="celebrate victory">
       <div class="big-emoji">🏆</div>
       <div class="confetti-row">🎉💰🎊💰🎉</div>
@@ -918,7 +1108,7 @@ function showVictoryModal() {
       </table>
       <div class="celebrate-sub">この先も遊び続けて、全物件制覇・全地方制覇を目指せるよ！</div>
       <button class="modal-close-btn primary" data-action="continue-play">🎉 続けてあそぶ</button>
-    </div>`;
+    </div>`);
 }
 
 // ============================================================
@@ -929,14 +1119,12 @@ function showLogModal() {
   const html = entries.length
     ? entries.map((e) => `<div class="log-entry ${e.cls ? "log-" + e.cls : ""}"><span class="log-when">${e.when}</span>${e.text}</div>`).join("")
     : `<div class="log-empty">まだ記録がありません。</div>`;
-  modalRoot.classList.remove("hidden");
-  modalBox.innerHTML = `<div class="modal-title">📜 プレイログ</div>${html}<button class="modal-close-btn primary" data-action="close-modal">とじる</button>`;
+  setModalContent(`<div class="modal-title">📜 プレイログ</div>${html}<button class="modal-close-btn primary" data-action="close-modal">とじる</button>`);
   setAfterClose(null);
 }
 
 function showMapModal() {
-  modalRoot.classList.remove("hidden");
-  modalBox.innerHTML = buildMapHtml();
+  setModalContent(buildMapHtml());
   setAfterClose(null);
 }
 
@@ -949,8 +1137,15 @@ function buildMapHtml() {
         const isCurrent = city.key === state.currentCity;
         const isMonopoly = state.monopolyCities.has(city.key);
         const ownedCount = city.properties.filter((_, i) => state.owned.has(propKey(city.key, i))).length;
-        const visited = ownedCount > 0;
-        return `<span class="map-chip ${isCurrent ? "current" : ""} ${isMonopoly ? "monopoly" : visited ? "visited" : ""}">${city.icon} ${city.name}${isMonopoly ? " 👑" : ""}${isCurrent ? " 📍" : ""}</span>`;
+        const remain = city.properties.length - ownedCount;
+        const visited = state.visitedCities.has(city.key) || ownedCount > 0;
+        const hasLandmark = city.properties.some((p, i) => p.tier === "E" && state.owned.has(propKey(city.key, i)));
+        let stateClass = "unvisited";
+        if (isMonopoly) stateClass = "monopoly";
+        else if (hasLandmark) stateClass = "landmark";
+        else if (remain === 1 && ownedCount > 0) stateClass = "near";
+        else if (visited) stateClass = "visited";
+        return `<span class="map-chip ${stateClass} ${isCurrent ? "current" : ""}">${city.icon} ${city.name}${isMonopoly ? " 👑" : hasLandmark ? " 🏙️" : remain === 1 && ownedCount > 0 ? " 🔥" : ""}${isCurrent ? " 📍" : ""}</span>`;
       })
       .join("");
     return `<div class="overview-city">
@@ -961,15 +1156,29 @@ function buildMapHtml() {
       <div class="overview-props-mini">${chips}</div>
     </div>`;
   }).join("");
-  return `<div class="modal-title">🗺️ 本州マップ</div>
-    <div class="modal-sub">📍が現在地。都市をタップして移動はできないよ（サイコロで移動しよう）。</div>
+
+  const routesHtml = LINES.map((line) => {
+    const names = line.cities.map((ck) => getCity(ck).name).join(" ⟷ ");
+    return `<div class="route-row">${modeIcons(line.mode)} <strong>${line.name}</strong>：${names}</div>`;
+  }).join("");
+
+  return `<div class="modal-title">🗺️ 全国マップ</div>
+    <div class="map-legend">
+      <span class="map-chip current">📍現在地</span>
+      <span class="map-chip unvisited">未訪問</span>
+      <span class="map-chip visited">訪問済み</span>
+      <span class="map-chip near">🔥完全制覇目前</span>
+      <span class="map-chip landmark">🏙️ランドマーク解禁</span>
+      <span class="map-chip monopoly">👑完全制覇</span>
+    </div>
     ${regionsHtml}
+    <div class="modal-sub" style="margin-top:14px;">🔗 主要ルート（🚄鉄道／🛣️高速道路／✈️空路）</div>
+    <div class="route-list">${routesHtml}</div>
     <button class="modal-close-btn primary" data-action="close-modal">とじる</button>`;
 }
 
 function showCollectionModal() {
-  modalRoot.classList.remove("hidden");
-  modalBox.innerHTML = buildCollectionHtml();
+  setModalContent(buildCollectionHtml());
   setAfterClose(null);
 }
 
@@ -1009,6 +1218,16 @@ function buildCollectionHtml() {
     return `<span class="mini-chip ${done ? "owned" : ""}">${combo.icon} ${combo.name}${done ? " ✓" : ""}</span>`;
   }).join("");
 
+  const pendingMissions = MISSIONS.filter((m) => !state.missionsAchieved.has(m.key))
+    .map((m) => ({ m, prog: getMissionProgress(m) }))
+    .sort((a, b) => a.prog.remain - b.prog.remain)
+    .slice(0, 3);
+  const missionsHtml = pendingMissions.length
+    ? pendingMissions
+        .map(({ m, prog }) => `<div class="mission-row"><span>${m.icon} ${m.name}</span><span class="mission-progress">${prog.owned}/${prog.total}件・${fmtMoney(m.reward)}</span></div>`)
+        .join("")
+    : `<div class="log-empty" style="padding:8px 0;">未達成のミッションはこれで全部！</div>`;
+
   return `
     <div class="modal-title">🏆 コレクション</div>
     <div class="collection-overall">
@@ -1017,6 +1236,8 @@ function buildCollectionHtml() {
     </div>
     <div class="modal-sub" style="margin-top:14px;">地方別 完全制覇状況</div>
     ${regionsHtml}
+    <div class="modal-sub" style="margin-top:14px;">🎯 ねらい目のミッション（達成 ${state.missionsAchieved.size}/${MISSIONS.length}）</div>
+    ${missionsHtml}
     <div class="modal-sub" style="margin-top:14px;">🏙️ ランドマーク物件（${landmarks.filter((l) => state.owned.has(propKey(l.city.key, l.i))).length}/${landmarks.length}）</div>
     <div class="overview-props-mini">${landmarksHtml}</div>
     <div class="modal-sub" style="margin-top:14px;">🔗 産業コンボ（${state.comboAchieved.size}/${COMBOS.length}）</div>
@@ -1027,26 +1248,24 @@ function buildCollectionHtml() {
 }
 
 function showMenuModal() {
-  modalRoot.classList.remove("hidden");
-  modalBox.innerHTML = `
+  setModalContent(`
     <div class="modal-title">☰ メニュー</div>
     <div class="modal-sub">サイコロで移動して物件を買い占め、都市や地方の完全制覇を目指そう。クイズは毎ターン出題され、正解するとごほうびがもらえるよ。年間収益1兆円で「トリリオネア」達成！</div>
     <button class="modal-close-btn secondary-outline" data-action="close-modal">ゲームにもどる</button>
     <button class="modal-close-btn primary" data-action="menu-new-game" style="margin-top:8px;">🆕 はじめから始める</button>
-  `;
+  `);
   setAfterClose(null);
 }
 
 function showConfirmNewGameModal() {
-  modalRoot.classList.remove("hidden");
-  modalBox.innerHTML = `
+  setModalContent(`
     <div class="celebrate">
       <div class="big-emoji">⚠️</div>
       <div class="celebrate-title">はじめから始めますか？</div>
       <div class="celebrate-sub">今のセーブデータは消えてしまいます。</div>
       <button class="modal-close-btn primary" data-action="confirm-new-game">はじめから始める</button>
       <button class="modal-close-btn secondary-outline" data-action="close-modal">キャンセル</button>
-    </div>`;
+    </div>`);
   setAfterClose(null);
 }
 
@@ -1075,6 +1294,9 @@ function serializeState() {
     quizRecent: state.quizRecent,
     logHistory: state.logHistory.slice(-150),
     pendingKessan: state.pendingKessan,
+    turnCount: state.turnCount,
+    visitedCities: [...state.visitedCities],
+    missionsAchieved: [...state.missionsAchieved],
   };
 }
 
@@ -1100,6 +1322,17 @@ function deserializeState(data) {
   s.quizRecent = data.quizRecent || [];
   s.logHistory = data.logHistory || [];
   s.pendingKessan = !!data.pendingKessan;
+  s.turnCount = data.turnCount || 0;
+  if (data.visitedCities) {
+    s.visitedCities = new Set(data.visitedCities);
+  } else {
+    // 旧セーブ互換: 訪問履歴がない場合、所有物件やクイズ履歴がある都市を「訪問済み」とみなす
+    const inferred = new Set(Object.keys(s.cityQuizCorrect));
+    s.owned.forEach((k) => inferred.add(k.split("#")[0]));
+    if (s.currentCity) inferred.add(s.currentCity);
+    s.visitedCities = inferred;
+  }
+  s.missionsAchieved = new Set(data.missionsAchieved || []);
   return s;
 }
 
@@ -1257,6 +1490,12 @@ function wireEvents() {
     const buyBtn = e.target.closest('[data-action="buy-prop"]');
     if (buyBtn && !buyBtn.disabled) {
       buyProperty(buyBtn.dataset.city, Number(buyBtn.dataset.idx));
+      return;
+    }
+    const tierTab = e.target.closest('[data-action="shop-tier"]');
+    if (tierTab) {
+      shopTierFilter = tierTab.dataset.tier;
+      renderCityShopContent(activeCityKey);
       return;
     }
     const kessanBtn = e.target.closest('[data-action="kessan-confirm"]');
