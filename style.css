@@ -267,8 +267,10 @@ button{ font-family:inherit; cursor:pointer; border:none; }
 .dir-btn:active{ transform: scale(.96); }
 .dir-btn:disabled{ opacity:.4; }
 .dir-btn.solo{ max-width: 220px; margin: 0 auto; }
-.dir-line-info{ display:block; font-size: 10px; font-weight:normal; color: var(--text-dim); margin-top:3px; }
-.dir-tile-hint{ color: var(--accent); letter-spacing: 1px; }
+.dir-line-info{ display:block; font-size: 10px; font-weight:normal; color: var(--text-dim); margin-top:1px; }
+.dir-tile-hint{ color: var(--accent); letter-spacing: .5px; }
+.dir-strip{ display:flex; justify-content:center; margin: 3px 0 1px; }
+.dir-strip-svg{ display:block; max-width:100%; }
 
 /* ---- ボトムナビ ---- */
 #bottomNav{
@@ -742,8 +744,11 @@ button{ font-family:inherit; cursor:pointer; border:none; }
   .city-icon{ font-size: 30px; }
   .city-name{ font-size: 18px; }
   #diceFace{ font-size: 32px; }
+  .dir-strip-svg{ height:18px; }
+  .dir-strip{ margin: 2px 0 0; }
 }
 @media (max-height: 600px){
   .stat-grid{ display:none; }
   .city-catch{ display:none; }
+  .dir-strip{ display:none; }
 }

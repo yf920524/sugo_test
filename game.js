@@ -508,15 +508,55 @@ function modeIcons(mode) {
   return modes.map((m) => MODE_ICON[m] || "").join("");
 }
 
+// fromIdx から dir 方向に、次の都市マスまでの実際のマス列（すごろく盤のミニストリップ描画用）を返す
+function getTileSequenceToCity(tiles, fromIdx, dir) {
+  const seq = [];
+  let i = fromIdx;
+  while (i + dir >= 0 && i + dir < tiles.length) {
+    i += dir;
+    seq.push(tiles[i]);
+    if (tiles[i].type === "city") break;
+  }
+  return seq;
+}
+
+// 方向ボタンの中に埋め込む「現在地→◯マス→目的地」のミニすごろく帯を描く
+function buildMiniStripSvg(seq, destCity) {
+  const stepPx = 16;
+  const n = seq.length;
+  const width = 13 + n * stepPx + 8;
+  const midY = 12;
+  let markers = `<circle cx="7" cy="${midY}" r="3.5" fill="#ffb703" stroke="#0f2540" stroke-width="1" />`;
+  let lastX = 7;
+  seq.forEach((t) => {
+    const cx = lastX + stepPx;
+    markers += `<line x1="${lastX}" y1="${midY}" x2="${cx}" y2="${midY}" stroke="#3a4a5c" stroke-width="1.6" />`;
+    if (t.type === "city") {
+      const st = getCityMapState(destCity);
+      const color = MAP_STATE_COLOR[st.stateClass];
+      markers += `<circle cx="${cx}" cy="${midY}" r="6.5" fill="${color}" stroke="#0f2540" stroke-width="1.2" /><text x="${cx}" y="${midY + 2.6}" font-size="7" text-anchor="middle">${destCity.icon}</text>`;
+    } else if (t.type === "event") {
+      markers += `<path transform="translate(${cx},${midY})" d="M0,-3 L0.9,-0.9 L3,-0.9 L1.3,0.5 L1.9,2.6 L0,1.3 L-1.9,2.6 L-1.3,0.5 L-3,-0.9 L-0.9,-0.9 Z" fill="#ffd166" stroke="#7a5200" stroke-width="0.5" />`;
+    } else if (t.type === "special") {
+      markers += `<circle cx="${cx}" cy="${midY}" r="4" fill="#3a2c14" stroke="#ffb703" stroke-width="1" />`;
+    } else {
+      markers += `<circle cx="${cx}" cy="${midY}" r="2.2" fill="#e8eef5" opacity="0.6" />`;
+    }
+    lastX = cx;
+  });
+  return `<svg viewBox="0 0 ${width} 24" width="${width}" height="24" class="dir-strip-svg">${markers}</svg>`;
+}
+
 function renderDirectionButtons() {
   let options;
   if (state.onLine) {
     const line = LINES.find((l) => l.key === state.onLine.lineKey);
     const tiles = getLineTiles(line);
+    const fromIdx = state.onLine.tileIdx;
     options = [];
     [state.onLine.dir, -state.onLine.dir].forEach((dir) => {
-      const found = scanToNextCity(tiles, state.onLine.tileIdx, dir);
-      if (found) options.push({ lineKey: line.key, dir, cityKey: found.cityKey, tileCount: found.count, mode: line.mode });
+      const found = scanToNextCity(tiles, fromIdx, dir);
+      if (found) options.push({ lineKey: line.key, dir, cityKey: found.cityKey, tileCount: found.count, mode: line.mode, tiles, fromIdx });
     });
   } else {
     options = getNeighbors(state.currentCity).map((n) => {
@@ -524,7 +564,7 @@ function renderDirectionButtons() {
       const tiles = getLineTiles(line);
       const curIdx = tileIndexOfCity(line, state.currentCity);
       const dstIdx = tileIndexOfCity(line, n.cityKey);
-      return { lineKey: n.lineKey, dir: n.dir, cityKey: n.cityKey, tileCount: Math.abs(dstIdx - curIdx), mode: line.mode };
+      return { lineKey: n.lineKey, dir: n.dir, cityKey: n.cityKey, tileCount: Math.abs(dstIdx - curIdx), mode: line.mode, tiles, fromIdx: curIdx };
     });
   }
   const many = options.length > 2;
@@ -533,8 +573,11 @@ function renderDirectionButtons() {
     .map((n, i) => {
       const c = getCity(n.cityKey);
       const spanFull = many && options.length % 2 === 1 && i === options.length - 1 ? ' style="grid-column:1 / -1;"' : "";
+      const seq = getTileSequenceToCity(n.tiles, n.fromIdx, n.dir);
+      const strip = buildMiniStripSvg(seq, c);
       return `<button class="dir-btn ${options.length === 1 ? "solo" : ""}" data-line-key="${n.lineKey}" data-dir="${n.dir}"${spanFull}>
         <span class="dir-icon">${c.icon}</span>${c.name}方面へ
+        <div class="dir-strip">${strip}</div>
         <span class="dir-line-info">${modeIcons(n.mode)}<span class="dir-tile-hint">あと${n.tileCount}マス</span> 🎲</span>
       </button>`;
     })
