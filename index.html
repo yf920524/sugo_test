@@ -11,15 +11,16 @@
 <body>
 <div id="app">
 
-  <!-- ===== スタート画面 ===== -->
+  <!-- ===== タイトル画面 ===== -->
   <section id="startScreen" class="screen">
     <div class="start-card">
-      <div class="start-emoji">💰🏙️👑</div>
+      <div class="start-emoji">💰🗾👑</div>
       <h1>トリリオネアを<br>目指せ！</h1>
-      <p class="start-sub">物件買い占め経営ゲーム</p>
-      <p class="start-desc">日本各地の街を自由に旅して、物件を買い占めよう！<br>街を完全制覇すると収益が2倍に。<br>年間収益<b>1兆円</b>を達成したら「トリリオネア」だ！</p>
-      <button id="startBtn" class="big-btn">▶ ゲームスタート</button>
-      <p class="start-note">1ターン=1か月。じっくり資産を育てよう。</p>
+      <p class="start-sub">本州を旅する物件買い占め経営ゲーム</p>
+      <p class="start-desc">本州各地の街を自由に旅して、物件を買い占めよう！<br>都市や地方を完全制覇すると収益が大きくアップ。<br>年間収益<b>1兆円</b>を達成したら「トリリオネア」だ！</p>
+      <button id="continueBtn" class="big-btn hidden">▶ 続きから</button>
+      <button id="newGameBtn" class="big-btn secondary-btn">🆕 はじめから</button>
+      <p class="start-note">1ターン＝1か月、4月はじまり。じっくり会社を育てよう。</p>
     </div>
   </section>
 
@@ -29,9 +30,10 @@
     <!-- ヘッダー：常時表示の主要指標 -->
     <header id="statusBar">
       <div class="date-row">
-        <div class="date-chip"><span id="statYear">1</span>年目 <span id="statMonth">1</span>月</div>
+        <div class="date-chip">第<span id="statYear">1</span>期 <span id="statMonth">4</span>月</div>
         <div class="header-actions">
           <button id="victoryBadge" class="victory-badge hidden" title="トリリオネア達成済み">🏆</button>
+          <button id="menuBtn" class="icon-btn-round" title="メニュー">☰</button>
         </div>
       </div>
 
@@ -52,7 +54,7 @@
       </div>
     </header>
 
-    <!-- 中央：現在地・路線マップ -->
+    <!-- 中央：現在地 -->
     <div id="cityPanel">
       <div id="cityNameRow">
         <span id="cityIcon" class="city-icon">🗼</span>
@@ -61,7 +63,7 @@
           <div id="cityCatch" class="city-catch">日本の首都、大都会！</div>
         </div>
       </div>
-      <div id="miniMap" class="mini-map"></div>
+      <div id="cityRegionBadge" class="city-region-badge">🗼 関東</div>
     </div>
 
     <!-- 操作エリア：サイコロ・方向選択 -->
@@ -73,8 +75,9 @@
     <!-- 下部：サブ操作 -->
     <nav id="bottomNav">
       <button id="shopBtn" class="nav-btn">🏠<span>物件</span></button>
+      <button id="mapBtn" class="nav-btn">🗺️<span>マップ</span></button>
+      <button id="collectionBtn" class="nav-btn">🏆<span>コレクション</span></button>
       <button id="logBtn" class="nav-btn">📜<span>ログ</span></button>
-      <button id="mapBtn" class="nav-btn">🗺️<span>全国マップ</span></button>
     </nav>
 
   </section>
@@ -86,7 +89,11 @@
 
 </div>
 
-<script src="data.js"></script>
+<script src="save.js"></script>
+<script src="data/cities.js"></script>
+<script src="data/quiz.js"></script>
+<script src="data/combos.js"></script>
+<script src="data/events.js"></script>
 <script src="game.js"></script>
 </body>
 </html>

@@ -43,7 +43,7 @@ html,body{
 .hidden{ display:none !important; }
 button{ font-family:inherit; cursor:pointer; border:none; }
 
-/* ===== スタート画面 ===== */
+/* ===== タイトル画面 ===== */
 #startScreen{
   flex:1;
   display:flex;
@@ -85,9 +85,16 @@ button{ font-family:inherit; cursor:pointer; border:none; }
   border-radius: 999px;
   box-shadow: 0 6px 0 #c98a02, 0 8px 16px rgba(0,0,0,.3);
   transition: transform .08s, box-shadow .08s;
+  margin-bottom: 10px;
 }
 .big-btn:active{ transform: translateY(4px); box-shadow: 0 2px 0 #c98a02, 0 4px 8px rgba(0,0,0,.3); }
 .big-btn:disabled{ opacity:.5; box-shadow:none; transform:none; }
+.big-btn.secondary-btn{
+  background: var(--panel-light);
+  color: var(--text);
+  box-shadow: 0 6px 0 #0c2036, 0 8px 16px rgba(0,0,0,.3);
+}
+.big-btn.secondary-btn:active{ box-shadow: 0 2px 0 #0c2036, 0 4px 8px rgba(0,0,0,.3); }
 
 /* ===== ゲーム画面（ノンスクロール） ===== */
 #gameScreen{
@@ -118,13 +125,23 @@ button{ font-family:inherit; cursor:pointer; border:none; }
   padding: 4px 12px;
   border-radius: 999px;
 }
+.header-actions{ display:flex; align-items:center; gap:6px; }
 .victory-badge{
-  font-size: 18px;
+  font-size: 16px;
   background: linear-gradient(180deg,#ffd166,#ffb703);
   border-radius: 999px;
-  width: 30px; height:30px;
+  width: 28px; height:28px;
   display:flex; align-items:center; justify-content:center;
 }
+.icon-btn-round{
+  font-size: 16px;
+  background: var(--panel-light);
+  color: var(--text);
+  border-radius: 999px;
+  width: 28px; height:28px;
+  display:flex; align-items:center; justify-content:center;
+}
+.icon-btn-round:disabled{ opacity:.4; }
 
 .goal-progress{ margin-bottom:6px; }
 .goal-progress-label{
@@ -169,70 +186,29 @@ button{ font-family:inherit; cursor:pointer; border:none; }
 .stat-icon{ font-size: 13px; }
 .stat-value{ font-weight:bold; font-size: 12px; color: var(--accent); }
 
-/* ---- 現在地・ミニマップ ---- */
+/* ---- 現在地 ---- */
 #cityPanel{
   flex-shrink:0;
-  padding: 10px 14px 6px;
+  padding: 12px 16px 6px;
 }
 #cityNameRow{
   display:flex;
   align-items:center;
   gap:10px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
-.city-icon{ font-size: 34px; }
-.city-name{ font-size: 19px; font-weight:bold; }
-.city-catch{ font-size: 11px; color: var(--text-dim); }
-
-.mini-map{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:2px;
-}
-.map-node{
-  position:relative;
-  flex:1;
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  font-size: 17px;
-}
-.map-node .node-icon{
-  width: 34px; height:34px;
-  display:flex; align-items:center; justify-content:center;
-  background: var(--panel-light);
-  border-radius: 50%;
-  border: 2px solid transparent;
-}
-.map-node.current .node-icon{
-  border-color: var(--accent-2);
-  box-shadow: 0 0 10px rgba(76,201,240,.7);
-  transform: scale(1.12);
-}
-.map-node.owned .node-icon{ border-color: rgba(255,183,3,.5); }
-.map-node.monopoly .node-icon{ border-color: var(--good); box-shadow: 0 0 8px rgba(82,201,138,.7); }
-.map-node .node-crown{
-  position:absolute;
-  top:-10px;
-  font-size: 13px;
-}
-.map-node .node-line{
-  position:absolute;
-  top:17px;
-  left:-50%;
-  width:100%;
-  height:2px;
-  background: var(--panel-light);
-  z-index:-1;
-}
-.map-node:first-child .node-line{ display:none; }
-.map-node .node-name{
-  font-size: 8.5px;
+.city-icon{ font-size: 36px; }
+.city-name{ font-size: 20px; font-weight:bold; }
+.city-catch{ font-size: 11.5px; color: var(--text-dim); }
+.city-region-badge{
+  display:inline-block;
+  font-size: 11px;
   color: var(--text-dim);
-  margin-top:3px;
-  white-space:nowrap;
+  background: rgba(255,255,255,.06);
+  padding: 3px 10px;
+  border-radius: 999px;
 }
+.city-region-badge.monopoly{ color: var(--good); background: rgba(82,201,138,.15); }
 
 /* ---- 操作エリア ---- */
 #controlArea{
@@ -241,7 +217,7 @@ button{ font-family:inherit; cursor:pointer; border:none; }
   flex-direction:column;
   align-items:center;
   justify-content:center;
-  gap: 10px;
+  gap: 12px;
   padding: 4px 16px;
   min-height:0;
 }
@@ -258,23 +234,27 @@ button{ font-family:inherit; cursor:pointer; border:none; }
 
 .direction-buttons{
   display:flex;
-  gap:10px;
+  gap:8px;
   width:100%;
+}
+.direction-buttons.grid{
+  display:grid;
+  grid-template-columns: repeat(2, 1fr);
 }
 .dir-btn{
   flex:1;
   background: var(--panel-light);
   color: var(--text);
-  border-radius: 16px;
-  padding: 14px 8px;
-  font-size: 13px;
+  border-radius: 14px;
+  padding: 11px 6px;
+  font-size: 12px;
   font-weight:bold;
   text-align:center;
-  line-height:1.5;
+  line-height:1.4;
   border: 2px solid rgba(255,183,3,.25);
   transition: transform .08s;
 }
-.dir-btn .dir-icon{ font-size: 22px; display:block; }
+.dir-btn .dir-icon{ font-size: 19px; display:block; }
 .dir-btn:active{ transform: scale(.96); }
 .dir-btn:disabled{ opacity:.4; }
 .dir-btn.solo{ max-width: 220px; margin: 0 auto; }
@@ -283,8 +263,8 @@ button{ font-family:inherit; cursor:pointer; border:none; }
 #bottomNav{
   flex-shrink:0;
   display:flex;
-  gap:8px;
-  padding: 8px 14px calc(10px + var(--safe-bottom));
+  gap:6px;
+  padding: 8px 12px calc(10px + var(--safe-bottom));
   background: var(--panel);
   border-top: 2px solid var(--panel-light);
 }
@@ -293,14 +273,14 @@ button{ font-family:inherit; cursor:pointer; border:none; }
   background: var(--panel-light);
   color: var(--text);
   border-radius: 12px;
-  padding: 9px 4px;
-  font-size: 18px;
+  padding: 8px 2px;
+  font-size: 17px;
   display:flex;
   flex-direction:column;
   align-items:center;
   gap:2px;
 }
-.nav-btn span{ font-size: 10px; font-weight:bold; }
+.nav-btn span{ font-size: 9px; font-weight:bold; }
 .nav-btn:disabled{ opacity:.4; }
 
 /* ===== モーダル ===== */
@@ -387,7 +367,7 @@ button{ font-family:inherit; cursor:pointer; border:none; }
   gap:9px;
   border: 2px solid transparent;
 }
-.prop-card.owned{ border-color: var(--good); opacity:.85; }
+.prop-card.owned{ border-color: var(--good); opacity:.9; }
 .prop-card.locked{ opacity:.55; }
 .prop-card.just-bought{ animation: cardPulse .5s ease; }
 @keyframes cardPulse{
@@ -405,11 +385,13 @@ button{ font-family:inherit; cursor:pointer; border:none; }
   padding: 2px 7px;
   border-radius: 999px;
   margin-top:4px;
+  margin-right: 4px;
   background: rgba(255,183,3,.18);
   color: var(--accent);
 }
 .prop-badge.owned-badge{ background: rgba(82,201,138,.2); color: var(--good); }
 .prop-badge.locked-badge{ background: rgba(255,107,107,.18); color: var(--bad); }
+.prop-badge.combo-badge{ background: rgba(76,201,240,.2); color: var(--accent-2); }
 .prop-buy-btn{
   background: var(--accent);
   color:#1a1a1a;
@@ -465,11 +447,44 @@ button{ font-family:inherit; cursor:pointer; border:none; }
 .celebrate.victory{ padding-top: 4px; }
 .celebrate.victory .big-emoji{ font-size: 64px; }
 
-/* ===== 全国マップ / ログ ===== */
+/* ===== 決算 ===== */
+.kessan-lines{ margin: 8px 0 4px; }
+.kessan-line{
+  display:flex;
+  justify-content:space-between;
+  font-size: 13px;
+  padding: 6px 2px;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+}
+.kessan-line.good span:last-child{ color: var(--good); }
+.kessan-line.bad span:last-child{ color: var(--bad); }
+.kessan-total{
+  display:flex;
+  justify-content:space-between;
+  font-size: 16px;
+  font-weight:bold;
+  padding: 10px 2px;
+  margin-top: 4px;
+  border-top: 2px solid var(--panel-light);
+  color: var(--accent);
+}
+.kessan-cashflow{
+  text-align:center;
+  font-size: 14px;
+  color: var(--text-dim);
+  background: rgba(255,255,255,.05);
+  border-radius: 10px;
+  padding: 10px;
+  margin-top: 6px;
+}
+.kessan-cashflow strong{ color: var(--accent); }
+
+/* ===== マップ / コレクション / ログ ===== */
 .overview-city{ margin-bottom: 14px; }
 .overview-city-head{
   display:flex;
   align-items:center;
+  justify-content:space-between;
   gap:8px;
   font-weight:bold;
   font-size: 13.5px;
@@ -481,6 +496,7 @@ button{ font-family:inherit; cursor:pointer; border:none; }
   padding: 2px 8px;
   border-radius:999px;
   color: var(--text-dim);
+  white-space:nowrap;
 }
 .overview-city-head .badge-mini.done{ background: rgba(82,201,138,.25); color: var(--good); }
 .overview-props-mini{ display:flex; flex-wrap:wrap; gap:6px; }
@@ -493,6 +509,42 @@ button{ font-family:inherit; cursor:pointer; border:none; }
 }
 .mini-chip.owned{ background: rgba(82,201,138,.2); color: var(--good); }
 .mini-chip.locked{ background: rgba(255,107,107,.12); color: var(--bad); }
+
+.map-chip{
+  font-size: 11px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--panel-light);
+  color: var(--text-dim);
+}
+.map-chip.visited{ color: var(--text); }
+.map-chip.monopoly{ background: rgba(82,201,138,.2); color: var(--good); font-weight:bold; }
+.map-chip.current{ outline: 2px solid var(--accent-2); color: var(--text); font-weight:bold; }
+
+.collection-overall{ text-align:center; margin: 4px 0 14px; }
+.collection-overall-pct{ font-size: 40px; font-weight:bold; color: var(--accent); }
+.collection-overall-label{ font-size: 12px; color: var(--text-dim); }
+.collection-row{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  font-size: 12.5px;
+  padding: 6px 0;
+}
+.collection-row > span:first-child{ flex-shrink:0; width: 108px; }
+.mini-bar{
+  flex:1;
+  height:8px;
+  background: rgba(255,255,255,.1);
+  border-radius: 999px;
+  overflow:hidden;
+}
+.mini-bar-fill{
+  height:100%;
+  background: linear-gradient(90deg,#4cc9f0,#52c98a);
+  border-radius: 999px;
+}
+.collection-pct{ flex-shrink:0; font-size: 11px; color: var(--text-dim); width: 44px; text-align:right; }
 
 .log-entry{
   font-size: 12.5px;
@@ -508,11 +560,17 @@ button{ font-family:inherit; cursor:pointer; border:none; }
 .log-entry.log-highlight{ color: var(--accent); }
 .log-empty{ text-align:center; color: var(--text-dim); font-size: 13px; padding: 20px 0; }
 
+/* ===== トースト（イベント） ===== */
+.toast-icon{ font-size: 40px; text-align:center; margin-bottom: 8px; }
+.toast-text{ text-align:center; font-size: 13.5px; margin-bottom: 4px; color: var(--text-dim); }
+.toast-amount{ text-align:center; font-size: 18px; font-weight:bold; }
+.toast-amount.good{ color: var(--good); }
+.toast-amount.bad{ color: var(--bad); }
+
 @media (max-height: 680px){
-  .city-icon{ font-size: 28px; }
-  .city-name{ font-size: 17px; }
+  .city-icon{ font-size: 30px; }
+  .city-name{ font-size: 18px; }
   #diceFace{ font-size: 32px; }
-  .map-node .node-icon{ width:28px; height:28px; }
 }
 @media (max-height: 600px){
   .stat-grid{ display:none; }
