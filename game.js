@@ -28,7 +28,7 @@ const RESCUE_GRANT = 1500; // 万円：どこも買えないときの臨時ビ�
 let startScreen, gameScreen, continueBtn, newGameBtn;
 let statYear, statMonth, victoryBadge, menuBtn, statAnnualRevenue, goalBarFill;
 let statCash, statAssets, statProps, statMonopoly;
-let cityIcon, cityName, cityCatch, cityRegionBadge;
+let cityIcon, cityName, cityCatch, cityRegionBadge, routeProgressEl;
 let diceFace, directionButtons;
 let shopBtn, mapBtn, collectionBtn, logBtn;
 let modalRoot, modalBox;
@@ -47,7 +47,7 @@ function freshState() {
     cityQuizCorrect: {},
     quizCorrectTotal: 0,
     quizAskedTotal: 0,
-    discountCoupons: 0,
+    discountCoupons: [], // 割引率（%）の配列。購入時にいちばんお得なものから使われる
     kessanBonusPct: 0,
     kessanFlatBonus: 0,
     milestonesHit: new Set(),
@@ -60,6 +60,9 @@ function freshState() {
     turnCount: 0,
     visitedCities: new Set(),
     missionsAchieved: new Set(),
+    onLine: null,
+    triggeredEventTiles: [],
+    tutorialSeen: false,
   };
 }
 let state = freshState();
@@ -99,6 +102,24 @@ function delay(ms) {
 }
 function propKey(cityKey, idx) {
   return cityKey + "#" + idx;
+}
+// 割引クーポンは%の配列で保持し、購入時にいちばんお得な1枚から自動で使われる
+function getBestDiscountPct() {
+  return state.discountCoupons.length ? Math.max(...state.discountCoupons) : 0;
+}
+function consumeBestDiscount() {
+  if (!state.discountCoupons.length) return 0;
+  const best = Math.max(...state.discountCoupons);
+  state.discountCoupons.splice(state.discountCoupons.indexOf(best), 1);
+  return best;
+}
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h;
+}
+function seededChance(s) {
+  return (Math.abs(hashStr(s)) % 10000) / 10000;
 }
 function getCity(cityKey) {
   return CITIES.find((c) => c.key === cityKey);
@@ -272,7 +293,7 @@ function unlockHintText(hint) {
 }
 
 // ============================================================
-// 路線・移動
+// 路線・移動（すごろく方式：都市間に複数のマスを配置し、1マスずつ進む）
 // ============================================================
 function getNeighbors(cityKey) {
   const result = [];
@@ -298,24 +319,108 @@ function getNeighbors(cityKey) {
   return result;
 }
 
-async function movePlayerAlongLine(neighbor, steps) {
-  const line = LINES.find((l) => l.key === neighbor.lineKey);
-  const fromIdx = line.cities.indexOf(state.currentCity);
-  const targetIdx = Math.min(line.cities.length - 1, Math.max(0, fromIdx + neighbor.dir * steps));
+// 路線1本ぶんの「マス目」を生成する（都市マス＋都市間の空白・イベントマス）。
+// 都市間のマス数は実際の地理座標の距離から算出するので、遠い都市ほどマスが多い＝すごろくとして距離が分かる。
+// 出現するイベント・特別マスは路線キー＋インデックスから決定的に決まるので、再読み込みしても配置は変わらない。
+const lineTilesCache = {};
+function getLineTiles(line) {
+  if (lineTilesCache[line.key]) return lineTilesCache[line.key];
+  const tiles = [];
+  for (let c = 0; c < line.cities.length; c++) {
+    const cityKey = line.cities[c];
+    const city = getCity(cityKey);
+    tiles.push({ type: "city", cityKey, coord: city.coord });
+    if (c < line.cities.length - 1) {
+      const nextCity = getCity(line.cities[c + 1]);
+      const dist = Math.hypot(nextCity.coord.x - city.coord.x, nextCity.coord.y - city.coord.y);
+      const gapTiles = Math.max(1, Math.min(6, Math.round(dist / 14)));
+      const isTwoCityLine = line.cities.length === 2;
+      for (let g = 1; g <= gapTiles; g++) {
+        const t = g / (gapTiles + 1);
+        const coord = { x: city.coord.x + (nextCity.coord.x - city.coord.x) * t, y: city.coord.y + (nextCity.coord.y - city.coord.y) * t };
+        const tileKey = `${line.key}#${tiles.length}`;
+        let type = "blank";
+        let tileDef = null;
+        if (line.special && isTwoCityLine && g === Math.ceil(gapTiles / 2)) {
+          type = "special";
+          const pool = SPECIAL_TILES[line.special];
+          tileDef = pool && pool.length ? pool[Math.abs(hashStr(tileKey)) % pool.length] : null;
+        } else {
+          const chance = TILE_DENSITY_CHANCE[line.density] || 0.1;
+          if (seededChance(tileKey) < chance) {
+            type = "event";
+            tileDef = GENERIC_TILES[Math.abs(hashStr(tileKey + "x")) % GENERIC_TILES.length];
+          }
+        }
+        tiles.push({ type, coord, key: tileKey, tileDef });
+      }
+    }
+  }
+  tiles.forEach((t, i) => (t.idx = i));
+  lineTilesCache[line.key] = tiles;
+  return tiles;
+}
+
+function tileIndexOfCity(line, cityKey) {
+  return getLineTiles(line).findIndex((t) => t.type === "city" && t.cityKey === cityKey);
+}
+
+// tiles配列の fromIdx から dir 方向へ進み、最初に見つかる都市マスとそこまでのマス数を返す
+function scanToNextCity(tiles, fromIdx, dir) {
+  let i = fromIdx;
+  let count = 0;
+  while (i + dir >= 0 && i + dir < tiles.length) {
+    i += dir;
+    count++;
+    if (tiles[i].type === "city") return { cityKey: tiles[i].cityKey, count };
+  }
+  return null;
+}
+
+function describeTilePosition(tile, line) {
+  const tiles = getLineTiles(line);
+  const back = scanToNextCity(tiles, tile.idx, -1);
+  const fwd = scanToNextCity(tiles, tile.idx, 1);
+  const backName = back ? getCity(back.cityKey).name : "?";
+  const fwdName = fwd ? getCity(fwd.cityKey).name : "?";
+  return `${backName}→${fwdName}の途中（${line.name}）`;
+}
+
+async function movePlayerAlongTiles(lineKey, dir, steps) {
+  const line = LINES.find((l) => l.key === lineKey);
+  const tiles = getLineTiles(line);
+  const fromIdx = state.onLine && state.onLine.lineKey === lineKey ? state.onLine.tileIdx : tileIndexOfCity(line, state.currentCity);
+  const targetIdx = Math.min(tiles.length - 1, Math.max(0, fromIdx + dir * steps));
   let cur = fromIdx;
   while (cur !== targetIdx) {
-    cur += neighbor.dir;
-    state.currentCity = line.cities[cur];
-    renderCityDisplayOnly();
-    await delay(180);
+    cur += dir;
+    renderTileStepProgress(tiles[cur], line, Math.abs(cur - fromIdx), Math.abs(targetIdx - fromIdx));
+    await delay(220);
   }
+  const landed = tiles[cur];
   const justClosedFiscalYear = advanceMonth();
   state.pendingKessan = state.pendingKessan || justClosedFiscalYear;
   state.turnCount++;
-  resolveCellArrival(state.currentCity, line);
+  if (landed.type === "city") {
+    state.onLine = null;
+    state.currentCity = landed.cityKey;
+    renderCityDisplayOnly();
+    resolveCellArrival(landed.cityKey);
+  } else {
+    state.onLine = { lineKey, tileIdx: cur, dir };
+    resolveTileStop(landed, line);
+  }
 }
 
-function rollDiceThenMove(neighbor) {
+function renderTileStepProgress(tile, line, stepNum, totalSteps) {
+  renderHeader();
+  if (routeProgressEl) {
+    routeProgressEl.classList.remove("hidden");
+    routeProgressEl.textContent = `🚶 ${line.name} 移動中… (${stepNum}/${totalSteps}マス)`;
+  }
+}
+
+function rollDiceThenMove(lineKey, dir) {
   diceFace.classList.add("rolling");
   let cycles = 0;
   const spin = setInterval(() => {
@@ -326,8 +431,8 @@ function rollDiceThenMove(neighbor) {
       diceFace.classList.remove("rolling");
       const value = randInt(1, 6);
       diceFace.textContent = DICE_FACES[value - 1];
-      addLog(`🎲 ${value}が出た！${getCity(neighbor.cityKey).name}方面へ進んだ。`);
-      movePlayerAlongLine(neighbor, value);
+      addLog(`🎲 ${value}が出た！`);
+      movePlayerAlongTiles(lineKey, dir, value);
     }
   }, 70);
 }
@@ -336,11 +441,13 @@ function rollDiceThenMove(neighbor) {
 // 経済（年度・決算）
 // ============================================================
 function advanceMonth() {
-  state.monthIndex++;
-  if (state.monthIndex >= 12) {
-    state.monthIndex = 0;
-    return true; // 3月が終わり、決算のタイミング
+  // すでに3月（monthIndex=11）の場合は決算待ち。4月への繰り上げ・年度番号の更新は
+  // confirmKessan() で行うことで、決算が確定するまで表示が「3月」のまま保たれる
+  // （「第1期3月」→（誤った）「第1期4月」→「第2期4月」という不自然な中間表示を防ぐ）。
+  if (state.monthIndex >= 11) {
+    return true;
   }
+  state.monthIndex++;
   return false;
 }
 
@@ -370,12 +477,13 @@ function confirmKessan() {
   state.cash += b.totalProfit;
   addLog(`📊 第${state.year}期決算：利益 ${fmtMoney(b.totalProfit)}（現金 ${fmtMoney(state.cash)}）`, "highlight");
   state.year++;
+  state.monthIndex = 0; // 4月へ（表示上の繰り上げはここでまとめて行う）
   state.kessanBonusPct = 0;
   state.kessanFlatBonus = 0;
   state.pendingKessan = false;
   modalRoot.classList.add("hidden");
   modalBox.innerHTML = "";
-  autoSave();
+  autoSave(); // 新年度の状態で保存する
   afterTurnComplete();
 }
 
@@ -401,19 +509,33 @@ function modeIcons(mode) {
 }
 
 function renderDirectionButtons() {
-  const neighbors = getNeighbors(state.currentCity);
-  const many = neighbors.length > 2;
+  let options;
+  if (state.onLine) {
+    const line = LINES.find((l) => l.key === state.onLine.lineKey);
+    const tiles = getLineTiles(line);
+    options = [];
+    [state.onLine.dir, -state.onLine.dir].forEach((dir) => {
+      const found = scanToNextCity(tiles, state.onLine.tileIdx, dir);
+      if (found) options.push({ lineKey: line.key, dir, cityKey: found.cityKey, tileCount: found.count, mode: line.mode });
+    });
+  } else {
+    options = getNeighbors(state.currentCity).map((n) => {
+      const line = LINES.find((l) => l.key === n.lineKey);
+      const tiles = getLineTiles(line);
+      const curIdx = tileIndexOfCity(line, state.currentCity);
+      const dstIdx = tileIndexOfCity(line, n.cityKey);
+      return { lineKey: n.lineKey, dir: n.dir, cityKey: n.cityKey, tileCount: Math.abs(dstIdx - curIdx), mode: line.mode };
+    });
+  }
+  const many = options.length > 2;
   directionButtons.className = "direction-buttons" + (many ? " grid" : "");
-  directionButtons.innerHTML = neighbors
+  directionButtons.innerHTML = options
     .map((n, i) => {
       const c = getCity(n.cityKey);
-      const line = LINES.find((l) => l.key === n.lineKey);
-      const spanFull = many && neighbors.length % 2 === 1 && i === neighbors.length - 1 ? ' style="grid-column:1 / -1;"' : "";
-      const density = line ? line.density : 0;
-      const dots = "・".repeat(density);
-      return `<button class="dir-btn ${neighbors.length === 1 ? "solo" : ""}" data-city-key="${n.cityKey}" data-line-key="${n.lineKey}" data-dir="${n.dir}"${spanFull}>
+      const spanFull = many && options.length % 2 === 1 && i === options.length - 1 ? ' style="grid-column:1 / -1;"' : "";
+      return `<button class="dir-btn ${options.length === 1 ? "solo" : ""}" data-line-key="${n.lineKey}" data-dir="${n.dir}"${spanFull}>
         <span class="dir-icon">${c.icon}</span>${c.name}方面へ
-        <span class="dir-line-info">${modeIcons(line ? line.mode : "rail")}${dots ? `<span class="dir-tile-hint">${dots}</span>` : ""} 🎲</span>
+        <span class="dir-line-info">${modeIcons(n.mode)}<span class="dir-tile-hint">あと${n.tileCount}マス</span> 🎲</span>
       </button>`;
     })
     .join("");
@@ -428,6 +550,16 @@ function renderCityDisplayOnly() {
   const isMonopoly = state.monopolyCities.has(city.key);
   cityRegionBadge.textContent = `${region.icon} ${region.name}${isMonopoly ? " ・ 👑完全制覇" : ""}`;
   cityRegionBadge.classList.toggle("monopoly", isMonopoly);
+  if (routeProgressEl) {
+    if (state.onLine) {
+      const line = LINES.find((l) => l.key === state.onLine.lineKey);
+      const tiles = getLineTiles(line);
+      routeProgressEl.textContent = `📍 ${describeTilePosition(tiles[state.onLine.tileIdx], line)}`;
+      routeProgressEl.classList.remove("hidden");
+    } else {
+      routeProgressEl.classList.add("hidden");
+    }
+  }
 }
 
 function renderCityPanel() {
@@ -479,15 +611,37 @@ function afterTurnComplete() {
   autoSave();
 }
 
-function resolveCellArrival(cityKey, line) {
+function resolveCellArrival(cityKey) {
   renderHeader();
-  maybeTriggerTileEvent(line, (tileFired) => {
-    if (tileFired) {
-      handleCityArrival(cityKey);
-    } else {
-      maybeTriggerEvent(cityKey, () => handleCityArrival(cityKey));
-    }
-  });
+  if (routeProgressEl) routeProgressEl.classList.add("hidden");
+  maybeTriggerEvent(cityKey, () => handleCityArrival(cityKey));
+}
+
+// 都市と都市の間のマス（空白 or イベントマス）に止まったときの処理。
+// そのマスを「現在地」としてイベントを解決し、都市滞在時のクイズ・物件購入は発生しない。
+function resolveTileStop(tile, line) {
+  renderHeader();
+  if (routeProgressEl) {
+    routeProgressEl.classList.remove("hidden");
+    routeProgressEl.textContent = `📍 ${describeTilePosition(tile, line)}`;
+  }
+  addLog(`📍 ${describeTilePosition(tile, line)}で止まった。`, "highlight");
+  const alreadyTriggered = state.triggeredEventTiles.includes(tile.key);
+  if ((tile.type === "event" || tile.type === "special") && tile.tileDef && !alreadyTriggered) {
+    state.triggeredEventTiles.push(tile.key);
+    const result = applyTileEffect(tile.tileDef);
+    addLog(`${tile.tileDef.icon} ${tile.tileDef.name}${tile.tileDef.desc ? "：" + tile.tileDef.desc : ""}（${result.text}）`, result.good ? "good" : "bad");
+    setModalContent(`
+      <div class="toast-icon">${tile.tileDef.icon}</div>
+      <div class="modal-title" style="justify-content:center;">${tile.tileDef.name}</div>
+      ${tile.tileDef.desc ? `<div class="toast-text">${tile.tileDef.desc}</div>` : ""}
+      <div class="toast-amount ${result.good ? "good" : "bad"}">${result.text}</div>
+      <button class="modal-close-btn primary" data-action="close-modal">なるほど！</button>
+    `);
+    setAfterClose(() => afterTurnComplete());
+  } else {
+    afterTurnComplete();
+  }
 }
 
 function getCheapestAvailablePriceNearby() {
@@ -529,31 +683,32 @@ function handleCityArrival(cityKey) {
 
 // ============================================================
 // 道中イベント（タイル） - 主要幹線ほど少なく、地方路線・特別区間ほど起きやすい
+// （どのマスがイベントマスかは getLineTiles() で決定的に配置される。ここでは効果の適用のみ）
 // ============================================================
-function rollTileEvent(line) {
-  if (!line) return null;
-  const chance = TILE_DENSITY_CHANCE[line.density] || 0.1;
-  if (Math.random() > chance) return null;
-  const pool = line.special ? SPECIAL_TILES[line.special] : GENERIC_TILES;
-  if (!pool || !pool.length) return null;
-  return pick(pool);
+// 現在のゲーム経済規模の目安（現金＋所有物件の価値）。道中イベントの金額はこれに対する
+// 小さな割合としてスケールさせるので、序盤も終盤も「桁がずれた金額」にならない。
+function gameScaleUnit() {
+  return Math.max(state.cash + getOwnedPropertyValueSum(), START_CASH);
 }
 
 function applyTileEffect(tile) {
   const eff = tile.effect;
   if (eff.type === "cash") {
-    const amt = randInt(eff.min, eff.max);
+    const pct = eff.min + Math.random() * (eff.max - eff.min);
+    const amt = Math.max(300, Math.round(((gameScaleUnit() * pct) / 100 / 10)) * 10);
     state.cash += amt;
     return { text: `+${fmtMoney(amt)}`, good: true };
   }
   if (eff.type === "cashMinus") {
-    const amt = randInt(eff.min, eff.max);
+    const pct = eff.min + Math.random() * (eff.max - eff.min);
+    const amt = Math.max(200, Math.round(((gameScaleUnit() * pct) / 100 / 10)) * 10);
     state.cash = Math.max(0, state.cash - amt);
     return { text: `-${fmtMoney(amt)}`, good: false };
   }
   if (eff.type === "discount") {
-    state.discountCoupons++;
-    return { text: "🎟️ 次の購入が3割引になるクーポンをゲット！", good: true };
+    const pct = randInt(5, 10); // 道中イベントの割引は「ちょっと嬉しい」common枠のみ
+    state.discountCoupons.push(pct);
+    return { text: `🎟️ 次の購入が${pct}%引きになるクーポンをゲット！`, good: true };
   }
   if (eff.type === "kessanBonus") {
     const pct = randInt(eff.min, eff.max);
@@ -566,24 +721,6 @@ function applyTileEffect(tile) {
     return { text: `🔓 ${getCity(ck).name}のアンロック進捗 +1`, good: true };
   }
   return { text: "", good: true };
-}
-
-function maybeTriggerTileEvent(line, cont) {
-  const tile = rollTileEvent(line);
-  if (!tile) {
-    cont(false);
-    return;
-  }
-  const result = applyTileEffect(tile);
-  addLog(`${tile.icon} ${tile.name}${tile.desc ? "：" + tile.desc : ""}（${result.text}）`, result.good ? "good" : "bad");
-  setModalContent(`
-    <div class="toast-icon">${tile.icon}</div>
-    <div class="modal-title" style="justify-content:center;">${tile.name}</div>
-    ${tile.desc ? `<div class="toast-text">${tile.desc}</div>` : ""}
-    <div class="toast-amount ${result.good ? "good" : "bad"}">${result.text}</div>
-    <button class="modal-close-btn primary" data-action="close-modal">なるほど！</button>
-  `);
-  setAfterClose(() => cont(true));
 }
 
 // ============================================================
@@ -647,7 +784,9 @@ function getPrefMates(cityKey) {
   return group ? group.filter((k) => k !== cityKey) : [];
 }
 
-// 出題優先度：現在地の都市 → 同都道府県 → 同地方 → 全国、の順でフォールバック。
+// 出題優先度：現在地の都市 → 同都道府県 → 同地方 → 全国共通（タグなし）、の順でフォールバック。
+// 「全国」とは全都市のタグつき問題を指すのではなく、タグなしの一般問題のみを指す
+// （＝現在地と無関係な他都市の専門問題が出ることは、地方問題が尽きない限り起きない）。
 // 一度正解した問題は（プールが尽きるまで）二度と出題しない。
 function pickQuiz(cityKey) {
   const targetDiff = targetDifficultyForCity(cityKey);
@@ -656,26 +795,49 @@ function pickQuiz(cityKey) {
   const regionCities = CITIES.filter((c) => c.region === region).map((c) => c.key);
   const byDiff = (q) => q.difficulty <= targetDiff;
   const notAnsweredCorrect = (q) => !state.quizAnsweredCorrectIds.includes(QUIZ_BANK.indexOf(q));
+  const hasTag = (q, keys) => q.tags && q.tags.some((t) => keys.includes(t));
 
-  const tierCity = QUIZ_BANK.filter((q) => byDiff(q) && q.tags && q.tags.includes(cityKey));
-  const tierPref = QUIZ_BANK.filter((q) => byDiff(q) && q.tags && q.tags.some((t) => prefMates.includes(t)));
-  const tierRegion = QUIZ_BANK.filter((q) => byDiff(q) && q.tags && q.tags.some((t) => regionCities.includes(t)));
-  const tierNational = QUIZ_BANK.filter(byDiff);
+  const tierCity = QUIZ_BANK.filter((q) => hasTag(q, [cityKey]));
+  const tierPref = QUIZ_BANK.filter((q) => hasTag(q, prefMates));
+  const tierRegion = QUIZ_BANK.filter((q) => hasTag(q, regionCities));
+  const tierNational = QUIZ_BANK.filter((q) => !q.tags || q.tags.length === 0);
+  // 地方の範囲内（現在地の地方タグ問題＋全国共通問題）。難易度を広げる際もこの範囲は超えない。
+  const regionScope = QUIZ_BANK.filter((q) => hasTag(q, regionCities) || !q.tags || q.tags.length === 0);
 
+  for (const tier of [tierCity, tierPref, tierRegion, tierNational]) {
+    const fresh = tier.filter((q) => byDiff(q) && notAnsweredCorrect(q));
+    if (fresh.length) return pickFromPool(fresh);
+  }
+  // その難易度以下は地方内で出尽くした → 地方の範囲内で難易度制限をゆるめる（他地方には広げない）
+  const freshInRegion = regionScope.filter(notAnsweredCorrect);
+  if (freshInRegion.length) return pickFromPool(freshInRegion);
+  // 地方内は全問正解済み（コレクション上級者向け）→ 地方の範囲内で繰り返し出題を許可
+  if (regionScope.length) return pickFromPool(regionScope);
+  // 万一地方問題が皆無の場合のみ、全国のプールから出題する
+  return pickFromPool(QUIZ_BANK);
+}
+function pickBonusQuiz(cityKey) {
+  const prefMates = getPrefMates(cityKey);
+  const region = getCity(cityKey).region;
+  const regionCities = CITIES.filter((c) => c.region === region).map((c) => c.key);
+  const hasTag = (q, keys) => q.tags && q.tags.some((t) => keys.includes(t));
+  const notAnsweredCorrect = (q) => !state.quizAnsweredCorrectIds.includes(QUIZ_BANK.indexOf(q));
+  const isHard = (q) => q.difficulty >= 3;
+
+  const tierCity = QUIZ_BANK.filter((q) => isHard(q) && hasTag(q, [cityKey]));
+  const tierPref = QUIZ_BANK.filter((q) => isHard(q) && hasTag(q, prefMates));
+  const tierRegion = QUIZ_BANK.filter((q) => isHard(q) && hasTag(q, regionCities));
+  const tierNational = QUIZ_BANK.filter((q) => isHard(q) && (!q.tags || q.tags.length === 0));
   for (const tier of [tierCity, tierPref, tierRegion, tierNational]) {
     const fresh = tier.filter(notAnsweredCorrect);
     if (fresh.length) return pickFromPool(fresh);
   }
-  // その難易度以下は全問正解済み → 難易度制限をゆるめて未正解の問題を探す
-  const anyFresh = QUIZ_BANK.filter(notAnsweredCorrect);
-  if (anyFresh.length) return pickFromPool(anyFresh);
-  // 全問正解済み（コレクション上級者向け）→ 繰り返し出題を許可
-  return pickFromPool(QUIZ_BANK);
-}
-function pickBonusQuiz() {
-  const hardPool = QUIZ_BANK.filter((q) => q.difficulty >= 3);
-  const fresh = hardPool.filter((q) => !state.quizAnsweredCorrectIds.includes(QUIZ_BANK.indexOf(q)));
-  return pickFromPool(fresh.length ? fresh : hardPool.length ? hardPool : QUIZ_BANK);
+  const regionScope = QUIZ_BANK.filter((q) => isHard(q) && (hasTag(q, regionCities) || !q.tags || q.tags.length === 0));
+  const freshInRegion = regionScope.filter(notAnsweredCorrect);
+  if (freshInRegion.length) return pickFromPool(freshInRegion);
+  if (regionScope.length) return pickFromPool(regionScope);
+  const anyHard = QUIZ_BANK.filter(isHard);
+  return pickFromPool(anyHard.length ? anyHard : QUIZ_BANK);
 }
 function pickFromPool(pool) {
   let available = pool.filter((q) => !state.quizRecent.includes(QUIZ_BANK.indexOf(q)));
@@ -687,6 +849,20 @@ function pickFromPool(pool) {
   return q;
 }
 
+// 割引クーポンの当選率：通常は5〜10%が基本、20%はややレア、30%はかなりレアな特別報酬。
+// ボーナスチャレンジ（高難度クイズ）はレア枠の当選率が上がる。
+function rollDiscountPct(isBonus) {
+  const r = Math.random();
+  if (isBonus) {
+    if (r < 0.15) return 30;
+    if (r < 0.45) return 20;
+    return randInt(5, 10);
+  }
+  if (r < 0.03) return 30;
+  if (r < 0.18) return 20;
+  return randInt(5, 10);
+}
+
 function applyQuizReward(isBonus, isExtra, difficulty) {
   const diffMult = 1 + Math.max(0, (difficulty || 1) - 1) * 0.35; // Lv1=1.0 / Lv2=1.35 / Lv3=1.7 / Lv4=2.05
   let mult = diffMult;
@@ -695,13 +871,19 @@ function applyQuizReward(isBonus, isExtra, difficulty) {
   const floor = (state.turnCount <= START_DASH_TURNS ? START_DASH_CASH_FLOOR : NORMAL_CASH_FLOOR) * mult;
   const roll = Math.random();
   if (roll < 0.4) {
-    const amt = Math.max(floor, Math.round(((state.cash * 0.15 * mult) / 10)) * 10);
+    // 通常クイズは「少し嬉しい」投資資金くらいに抑え、高難度・ボーナスとの差をはっきりさせる
+    const amt = Math.max(floor, Math.round(((state.cash * 0.08 * mult) / 10)) * 10);
     state.cash += amt;
     return `💰 現金 +${fmtMoney(amt)} ゲット！`;
   } else if (roll < 0.7) {
     const n = isBonus ? 2 : 1;
-    state.discountCoupons += n;
-    return `🎟️ 次に買う物件が3割引になるクーポンを${n}枚ゲット！`;
+    const pcts = [];
+    for (let i = 0; i < n; i++) {
+      const pct = rollDiscountPct(isBonus);
+      pcts.push(pct);
+      state.discountCoupons.push(pct);
+    }
+    return `🎟️ 次に買う物件が${pcts.join("%・")}%引きになるクーポンを${n}枚ゲット！`;
   } else {
     const pct = Math.round((8 + Math.random() * 7) * mult);
     state.kessanBonusPct += pct;
@@ -714,7 +896,7 @@ function showQuizModal(cityKey, onDone, isBonus, extraBanners, isExtra) {
   quizCityKey = cityKey;
   quizIsBonus = !!isBonus;
   currentQuizIsExtra = !!isExtra;
-  const q = quizIsBonus ? pickBonusQuiz() : pickQuiz(cityKey);
+  const q = quizIsBonus ? pickBonusQuiz(cityKey) : pickQuiz(cityKey);
   currentQuizData = q;
   currentQuizAnswered = false;
   currentQuizOptions = shuffle(q.options.map((text, i) => ({ text, isCorrect: i === q.correct })));
@@ -843,9 +1025,10 @@ function buildCityShopHtml(cityKey) {
     : remain === 1
       ? `<div class="hint-banner">🔥 あと1件で完全制覇！</div>`
       : "";
+  const bestDiscount = getBestDiscountPct();
   const couponNote =
-    state.discountCoupons > 0
-      ? `<div class="modal-sub">🎟️ 割引クーポン ${state.discountCoupons}枚所持中（次の購入から自動適用）</div>`
+    state.discountCoupons.length > 0
+      ? `<div class="modal-sub">🎟️ 割引クーポン ${state.discountCoupons.length}枚所持中（最大${bestDiscount}%引き、次の購入から自動適用）</div>`
       : "";
 
   const tiersPresent = [...new Set(city.properties.map((p) => p.tier))];
@@ -864,8 +1047,8 @@ function buildCityShopHtml(cityKey) {
       const key = propKey(cityKey, i);
       const owned = state.owned.has(key);
       const locked = !owned && isPropertyLocked(cityKey, i);
-      const discounted = !owned && !locked && state.discountCoupons > 0;
-      const price = discounted ? Math.round(p.price * 0.7) : p.price;
+      const discounted = !owned && !locked && bestDiscount > 0;
+      const price = discounted ? Math.round(p.price * (1 - bestDiscount / 100)) : p.price;
       const affordable = state.cash >= price;
       let badge, buyEl, extraLine = "";
       if (owned) {
@@ -888,7 +1071,7 @@ function buildCityShopHtml(cityKey) {
           : `<button class="prop-buy-btn" data-action="launch-quiz" data-city="${cityKey}">🎯 クイズに挑戦</button>`;
       } else {
         badge = `<span class="prop-badge">あと${remain}件で完全制覇</span>`;
-        const label = discounted ? `割引 ${fmtMoney(price)}` : fmtMoney(price);
+        const label = discounted ? `${bestDiscount}%引き ${fmtMoney(price)}` : fmtMoney(price);
         if (affordable) {
           buyEl = `<button class="prop-buy-btn ${discounted ? "discounted" : ""}" data-action="buy-prop" data-city="${cityKey}" data-idx="${i}">${label}で購入</button>`;
           extraLine = `<div class="prop-cashflow">所持金 ${fmtMoney(state.cash)} → ${fmtMoney(state.cash - price)}</div>`;
@@ -911,6 +1094,7 @@ function buildCityShopHtml(cityKey) {
     .join("");
   return `
     <div class="modal-title">${city.icon} ${city.name}の物件（${ownedCount}/${city.properties.length}）</div>
+    <div class="shop-cash-bar">💴 所持金　<strong>${fmtMoney(state.cash)}</strong></div>
     <div class="modal-sub">${city.catch}</div>
     ${banner}
     ${couponNote}
@@ -926,14 +1110,15 @@ function buyProperty(cityKey, idx) {
   const key = propKey(cityKey, idx);
   if (state.owned.has(key)) return;
   if (isPropertyLocked(cityKey, idx)) return;
-  const discounted = state.discountCoupons > 0;
-  const price = discounted ? Math.round(p.price * 0.7) : p.price;
+  const bestDiscount = getBestDiscountPct();
+  const discounted = bestDiscount > 0;
+  const price = discounted ? Math.round(p.price * (1 - bestDiscount / 100)) : p.price;
   if (state.cash < price) return;
 
   const beforeLockedLandmarks = getLockedLandmarkIdxs(cityKey);
 
   state.cash -= price;
-  if (discounted) state.discountCoupons--;
+  if (discounted) consumeBestDiscount();
   state.owned.add(key);
   addLog(`🏠 ${city.name}の「${p.name}」を購入！（${fmtMoney(price)}）`, "good");
 
@@ -1217,57 +1402,41 @@ const MAP_STATE_COLOR = {
 const MODE_COLOR = { rail: "#4cc9f0", highway: "#ffb703", flight: "#c98bf5" };
 const SPECIAL_ICON = { tunnel: "🚇", bridge: "🌉", strait: "🌊", flight: "✈️" };
 
-// ---- 凸包（Graham scan）+外側にふくらませて「陸地シルエット」のヒントを作る ----
-function convexHull(points) {
-  if (points.length < 3) return points;
-  const pts = points.slice().sort((a, b) => a.x - b.x || a.y - b.y);
-  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-  const lower = [];
-  for (const p of pts) {
-    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
-    lower.push(p);
+// ---- 座標リストをなめらかな閉じた海岸線（カトマル・ロム曲線）に変換する ----
+function smoothClosedPath(points) {
+  const n = points.length;
+  if (n < 3) return "";
+  const p = (i) => points[((i % n) + n) % n];
+  let d = `M ${p(0)[0]},${p(0)[1]} `;
+  for (let i = 0; i < n; i++) {
+    const p0 = p(i - 1), p1 = p(i), p2 = p(i + 1), p3 = p(i + 2);
+    const c1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const c1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const c2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const c2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += `C ${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2[0]},${p2[1]} `;
   }
-  const upper = [];
-  for (let i = pts.length - 1; i >= 0; i--) {
-    const p = pts[i];
-    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
-    upper.push(p);
-  }
-  lower.pop();
-  upper.pop();
-  return lower.concat(upper);
+  return d + "Z";
 }
 
-function silhouettePath(points, padding) {
-  if (points.length === 0) return "";
-  if (points.length === 1) {
-    const p = points[0];
-    return `M ${p.x - padding},${p.y} a ${padding},${padding} 0 1,0 ${padding * 2},0 a ${padding},${padding} 0 1,0 ${-padding * 2},0`;
-  }
-  const hull = convexHull(points);
-  const cx = hull.reduce((s, p) => s + p.x, 0) / hull.length;
-  const cy = hull.reduce((s, p) => s + p.y, 0) / hull.length;
-  const expanded = hull.map((p) => {
-    const dx = p.x - cx, dy = p.y - cy;
-    const len = Math.sqrt(dx * dx + dy * dy) || 1;
-    return { x: p.x + (dx / len) * padding, y: p.y + (dy / len) * padding };
-  });
-  return "M " + expanded.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" L ") + " Z";
-}
-
-const LANDMASS_GROUPS = [
-  { key: "hokkaido", regions: ["hokkaido"] },
-  { key: "honshu", regions: ["tohoku", "kanto", "koshinetsu_hokuriku", "tokai", "kansai", "chugoku"] },
-  { key: "shikoku", regions: ["shikoku"] },
-  { key: "kyushu", regions: ["kyushu"] },
-  { key: "okinawa", regions: ["okinawa"] },
-];
+const MAP_VIEWBOX = { minX: -20, minY: -45, w: 300, h: 500 };
 
 function buildMapSvg() {
-  const W = 260, H = 440;
-  const silhouettes = LANDMASS_GROUPS.map((g) => {
-    const pts = CITIES.filter((c) => g.regions.includes(c.region)).map((c) => c.coord);
-    return `<path d="${silhouettePath(pts, 16)}" fill="#2a4a63" opacity="0.55" />`;
+  const { minX, minY, w: W, h: H } = MAP_VIEWBOX;
+  const silhouettes = Object.entries(LANDMASS_OUTLINES)
+    .map(([key, pts]) => `<path d="${smoothClosedPath(pts)}" fill="#284a68" stroke="#3a688f" stroke-width="1" opacity="0.9" />`)
+    .join("");
+
+  const tileDotsHtml = LINES.map((line) => {
+    const tiles = getLineTiles(line);
+    return tiles
+      .filter((t) => t.type !== "city")
+      .map((t) => {
+        if (t.type === "special") return `<text x="${t.coord.x}" y="${t.coord.y + 2.5}" font-size="8" text-anchor="middle">${SPECIAL_ICON[line.special] || "★"}</text>`;
+        if (t.type === "event") return `<circle cx="${t.coord.x}" cy="${t.coord.y}" r="1.8" fill="#ffd166" stroke="#0f2540" stroke-width="0.5" />`;
+        return `<circle cx="${t.coord.x}" cy="${t.coord.y}" r="1" fill="#7d93a8" />`;
+      })
+      .join("");
   }).join("");
 
   const linesHtml = LINES.map((line) => {
@@ -1277,38 +1446,51 @@ function buildMapSvg() {
     const width = line.special ? 3 : 1.6;
     const pts = line.cities.map((ck) => getCity(ck).coord);
     const pointsAttr = pts.map((p) => `${p.x},${p.y}`).join(" ");
-    let mid = "";
-    if (line.special) {
-      const a = pts[0], b = pts[1] || pts[0];
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      mid = `<text x="${mx}" y="${my - 3}" font-size="9" text-anchor="middle">${SPECIAL_ICON[line.special] || ""}</text>`;
-    }
-    return `<polyline points="${pointsAttr}" fill="none" stroke="${color}" stroke-width="${width}" stroke-dasharray="${dash}" stroke-linecap="round" stroke-linejoin="round" opacity="0.85" />${mid}`;
+    const mx = pts[Math.floor(pts.length / 2)].x;
+    const my = pts[Math.floor(pts.length / 2)].y;
+    const nameLabel = `<text x="${mx}" y="${my - 4}" font-size="5.5" text-anchor="middle" fill="${color}" opacity="0.9" paint-order="stroke" stroke="#0f2540" stroke-width="2">${line.name}</text>`;
+    return `<polyline points="${pointsAttr}" fill="none" stroke="${color}" stroke-width="${width}" stroke-dasharray="${dash}" stroke-linecap="round" stroke-linejoin="round" opacity="0.85" />${nameLabel}`;
   }).join("");
 
-  const gapY = 398;
-  const gapHtml = `<line x1="0" y1="${gapY}" x2="${W}" y2="${gapY}" stroke="#4cc9f0" stroke-width="1" stroke-dasharray="3,4" opacity="0.4" />
-    <text x="${W / 2}" y="${gapY + 12}" font-size="8.5" text-anchor="middle" fill="#a9bdd4">🌊 海（沖縄へは飛行機のみで移動）</text>`;
+  const gapY = 400;
+  const gapHtml = `<line x1="${minX}" y1="${gapY}" x2="${minX + W}" y2="${gapY}" stroke="#4cc9f0" stroke-width="1" stroke-dasharray="3,4" opacity="0.4" />
+    <text x="${minX + W / 2}" y="${gapY + 12}" font-size="8.5" text-anchor="middle" fill="#a9bdd4">🌊 海（沖縄へは飛行機のみで移動）</text>`;
 
   const labelCities = CITIES.filter((c) => c.size === "metro" || c.size === "hub" || c.key === state.currentCity);
   const dotsHtml = CITIES.map((city) => {
     const st = getCityMapState(city);
     const color = MAP_STATE_COLOR[st.stateClass];
-    const r = st.isCurrent ? 6.5 : city.size === "metro" ? 4.5 : city.size === "hub" ? 3.6 : 2.8;
-    const ring = st.isCurrent ? `<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r + 3}" fill="none" stroke="#ffb703" stroke-width="1.6"><animate attributeName="r" values="${r + 3};${r + 5};${r + 3}" dur="1.6s" repeatCount="indefinite" /></circle>` : "";
+    const isPlayerHere = st.isCurrent && !state.onLine;
+    const r = isPlayerHere ? 6.5 : city.size === "metro" ? 4.5 : city.size === "hub" ? 3.6 : 2.8;
+    const ring = isPlayerHere ? `<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r + 3}" fill="none" stroke="#ffb703" stroke-width="1.6"><animate attributeName="r" values="${r + 3};${r + 5};${r + 3}" dur="1.6s" repeatCount="indefinite" /></circle>` : "";
     const badge = st.isMonopoly ? "👑" : st.hasLandmark ? "🏙️" : st.remain === 1 && st.ownedCount > 0 ? "🔥" : "";
     const showLabel = labelCities.includes(city);
     const label = showLabel
-      ? `<text x="${city.coord.x}" y="${city.coord.y - r - 3}" font-size="${st.isCurrent ? 9 : 7}" text-anchor="middle" fill="${st.isCurrent ? "#ffb703" : "#e8eef5"}" font-weight="${st.isCurrent ? "bold" : "normal"}">${city.name}${badge}</text>`
+      ? `<text x="${city.coord.x}" y="${city.coord.y - r - 3}" font-size="${isPlayerHere ? 9 : 7}" text-anchor="middle" fill="${isPlayerHere ? "#ffb703" : "#e8eef5"}" font-weight="${isPlayerHere ? "bold" : "normal"}" paint-order="stroke" stroke="#0f2540" stroke-width="2.5">${city.name}${badge}</text>`
       : "";
     return `<g>${ring}<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r}" fill="${color}" stroke="#0f2540" stroke-width="1"><title>${city.name}${badge}</title></circle>${label}</g>`;
   }).join("");
 
-  return `<svg viewBox="0 0 ${W} ${H}" class="japan-map-svg" xmlns="http://www.w3.org/2000/svg">
+  let playerOnLineHtml = "";
+  if (state.onLine) {
+    const line = LINES.find((l) => l.key === state.onLine.lineKey);
+    const tile = getLineTiles(line)[state.onLine.tileIdx];
+    if (tile) {
+      playerOnLineHtml = `<g>
+        <circle cx="${tile.coord.x}" cy="${tile.coord.y}" r="8" fill="none" stroke="#ffb703" stroke-width="1.6"><animate attributeName="r" values="8;10;8" dur="1.6s" repeatCount="indefinite" /></circle>
+        <circle cx="${tile.coord.x}" cy="${tile.coord.y}" r="5.5" fill="#ffb703" stroke="#0f2540" stroke-width="1" />
+        <text x="${tile.coord.x}" y="${tile.coord.y - 11}" font-size="9" text-anchor="middle" fill="#ffb703" font-weight="bold" paint-order="stroke" stroke="#0f2540" stroke-width="2.5">📍現在地</text>
+      </g>`;
+    }
+  }
+
+  return `<svg viewBox="${minX} ${minY} ${W} ${H}" class="japan-map-svg" xmlns="http://www.w3.org/2000/svg">
     ${silhouettes}
     ${linesHtml}
+    ${tileDotsHtml}
     ${gapHtml}
     ${dotsHtml}
+    ${playerOnLineHtml}
   </svg>`;
 }
 
@@ -1331,11 +1513,6 @@ function buildMapHtml() {
     </div>`;
   }).join("");
 
-  const routesHtml = LINES.map((line) => {
-    const names = line.cities.map((ck) => getCity(ck).name).join(" ⟷ ");
-    return `<div class="route-row">${modeIcons(line.mode)} <strong>${line.name}</strong>：${names}</div>`;
-  }).join("");
-
   return `<div class="modal-title">🗺️ 全国マップ</div>
     <div class="map-svg-wrap">${buildMapSvg()}</div>
     <div class="map-legend">
@@ -1346,14 +1523,13 @@ function buildMapHtml() {
       <span class="map-chip landmark">🏙️ランドマーク解禁</span>
       <span class="map-chip monopoly">👑完全制覇</span>
     </div>
-    <div class="modal-sub">🚄鉄道（水色線）／🛣️高速道路（オレンジ点線）／✈️空路（紫の点線）。橋・トンネル・海峡は太線＋アイコンつき。</div>
+    <div class="modal-sub">🚄鉄道（水色線）／🛣️高速道路（オレンジ点線）／✈️空路（紫の点線）。橋・トンネル・海峡は太線＋アイコンつき。マス目の黄色い点はイベントマス。路線名は地図上に直接表示されています。</div>
     ${regionsHtml}
-    <div class="modal-sub" style="margin-top:14px;">🔗 主要ルート一覧</div>
-    <div class="route-list">${routesHtml}</div>
     <button class="modal-close-btn primary" data-action="close-modal">とじる</button>`;
 }
 
 function showCollectionModal() {
+  missionDetailReturnTo = showCollectionModal;
   setModalContent(buildCollectionHtml());
   setAfterClose(null);
 }
@@ -1399,9 +1575,7 @@ function buildCollectionHtml() {
     .sort((a, b) => a.prog.remain - b.prog.remain)
     .slice(0, 3);
   const missionsHtml = pendingMissions.length
-    ? pendingMissions
-        .map(({ m, prog }) => `<div class="mission-row"><span>${m.icon} ${m.name}</span><span class="mission-progress">${prog.owned}/${prog.total}件・${fmtMoney(m.reward)}</span></div>`)
-        .join("")
+    ? pendingMissions.map(({ m, prog }) => buildMissionRowHtml(m, prog)).join("")
     : `<div class="log-empty" style="padding:8px 0;">未達成のミッションはこれで全部！</div>`;
 
   return `
@@ -1412,8 +1586,9 @@ function buildCollectionHtml() {
     </div>
     <div class="modal-sub" style="margin-top:14px;">地方別 完全制覇状況</div>
     ${regionsHtml}
-    <div class="modal-sub" style="margin-top:14px;">🎯 ねらい目のミッション（達成 ${state.missionsAchieved.size}/${MISSIONS.length}）</div>
+    <div class="modal-sub" style="margin-top:14px;">🎯 ねらい目のミッション（達成 ${state.missionsAchieved.size}/${MISSIONS.length}）タップで詳細</div>
     ${missionsHtml}
+    <button class="modal-close-btn secondary-outline" data-action="mission-list" style="margin-top:2px;">🎯 ミッション一覧をすべて見る</button>
     <div class="modal-sub" style="margin-top:14px;">🏙️ ランドマーク物件（${landmarks.filter((l) => state.owned.has(propKey(l.city.key, l.i))).length}/${landmarks.length}）</div>
     <div class="overview-props-mini">${landmarksHtml}</div>
     <div class="modal-sub" style="margin-top:14px;">🔗 産業コンボ（${state.comboAchieved.size}/${COMBOS.length}）</div>
@@ -1423,14 +1598,100 @@ function buildCollectionHtml() {
   `;
 }
 
+// ============================================================
+// ミッション詳細（タップで達成条件・進捗・報酬を確認）
+// ============================================================
+let missionDetailReturnTo = null;
+
+function buildMissionRowHtml(m, prog) {
+  const achieved = state.missionsAchieved.has(m.key);
+  return `<div class="mission-row" data-action="mission-detail" data-mission="${m.key}">
+    <span>${achieved ? "✅" : m.icon} ${m.name}</span>
+    <span class="mission-progress">${achieved ? "達成済み" : `${prog.owned}/${prog.total}件`}・${fmtMoney(m.reward)}</span>
+  </div>`;
+}
+
+function showMissionListModal() {
+  missionDetailReturnTo = showMissionListModal;
+  setModalContent(buildMissionListHtml());
+  setAfterClose(null);
+}
+
+function buildMissionListHtml() {
+  const rows = MISSIONS.filter((m) => isMissionUnlocked(m))
+    .map((m) => buildMissionRowHtml(m, getMissionProgress(m)))
+    .join("");
+  return `<div class="modal-title">🎯 ミッション一覧（${state.missionsAchieved.size}/${MISSIONS.length}達成）</div>
+    <div class="modal-sub">タップすると達成条件・進捗・報酬を確認できるよ。</div>
+    ${rows || '<div class="log-empty">ミッションがありません。</div>'}
+    <button class="modal-close-btn primary" data-action="close-modal">とじる</button>`;
+}
+
+function showMissionDetailModal(missionKey) {
+  const m = MISSIONS.find((x) => x.key === missionKey);
+  if (!m) return;
+  setModalContent(buildMissionDetailHtml(m));
+  setAfterClose(null);
+}
+
+function buildMissionDetailHtml(m) {
+  const achieved = state.missionsAchieved.has(m.key);
+  const prog = getMissionProgress(m);
+  const memberRows = m.members
+    .map((mem) => {
+      const city = getCity(mem.city);
+      const p = city.properties[mem.idx];
+      const owned = state.owned.has(propKey(mem.city, mem.idx));
+      return `<div class="mission-detail-row ${owned ? "owned" : ""}">
+        <span class="mission-detail-check">${owned ? "✅" : "⬜"}</span>
+        <span class="mission-detail-name">${city.icon} ${city.name}：${p.icon} ${p.name}</span>
+      </div>`;
+    })
+    .join("");
+  const conditionLine = achieved
+    ? "🎉 達成済み！"
+    : `達成条件：下の物件をすべて所有する（進捗 ${prog.owned}/${prog.total}件）`;
+  return `<div class="modal-title">${m.icon} ${m.name}</div>
+    <div class="modal-sub">${m.explain}</div>
+    <div class="hint-banner">${conditionLine}</div>
+    <div class="mission-detail-list">${memberRows}</div>
+    <div class="mission-detail-reward">報酬　<strong>${fmtMoney(m.reward)}</strong></div>
+    <button class="modal-close-btn primary" data-action="mission-back">戻る</button>`;
+}
+
 function showMenuModal() {
   setModalContent(`
     <div class="modal-title">☰ メニュー</div>
     <div class="modal-sub">サイコロで移動して物件を買い占め、都市や地方の完全制覇を目指そう。クイズは毎ターン出題され、正解するとごほうびがもらえるよ。年間収益1兆円で「トリリオネア」達成！</div>
     <button class="modal-close-btn secondary-outline" data-action="close-modal">ゲームにもどる</button>
+    <button class="modal-close-btn secondary-outline" data-action="show-tutorial" style="margin-top:8px;">📖 あそびかたを見る</button>
     <button class="modal-close-btn primary" data-action="menu-new-game" style="margin-top:8px;">🆕 はじめから始める</button>
   `);
   setAfterClose(null);
+}
+
+// ============================================================
+// あそびかた（初回チュートリアル。メニューからいつでも見返せる）
+// ============================================================
+function buildTutorialHtml() {
+  return `<div class="modal-title">📖 あそびかた</div>
+    <div class="tutorial-list">
+      <div class="tutorial-item"><span class="tutorial-emoji">🎯</span>目標は<strong>年間収益1兆円</strong>！日本一の大企業を作ろう。</div>
+      <div class="tutorial-item"><span class="tutorial-emoji">🎲</span>サイコロを振って<strong>日本全国</strong>を旅しよう。</div>
+      <div class="tutorial-item"><span class="tutorial-emoji">❓</span>着いた街では<strong>クイズ</strong>に答えてごほうびをゲット。</div>
+      <div class="tutorial-item"><span class="tutorial-emoji">🏠</span>もらったお金で<strong>物件</strong>を買って収益を増やそう。</div>
+      <div class="tutorial-item"><span class="tutorial-emoji">📊</span><strong>3月の決算</strong>で1年ぶんの利益がまとめて入るよ。</div>
+      <div class="tutorial-item"><span class="tutorial-emoji">👑</span>街や地方を<strong>完全制覇</strong>すると収益がもっとアップ！</div>
+    </div>
+    <button class="modal-close-btn primary" data-action="close-modal">はじめる！</button>`;
+}
+function showTutorialModal(onDone) {
+  if (!state.tutorialSeen) {
+    state.tutorialSeen = true;
+    autoSave();
+  }
+  setModalContent(buildTutorialHtml());
+  setAfterClose(onDone || null);
 }
 
 function showConfirmNewGameModal() {
@@ -1474,6 +1735,9 @@ function serializeState() {
     turnCount: state.turnCount,
     visitedCities: [...state.visitedCities],
     missionsAchieved: [...state.missionsAchieved],
+    onLine: state.onLine,
+    triggeredEventTiles: state.triggeredEventTiles,
+    tutorialSeen: state.tutorialSeen,
   };
 }
 
@@ -1490,7 +1754,14 @@ function deserializeState(data) {
   s.cityQuizCorrect = data.cityQuizCorrect || {};
   s.quizCorrectTotal = data.quizCorrectTotal || 0;
   s.quizAskedTotal = data.quizAskedTotal || 0;
-  s.discountCoupons = data.discountCoupons || 0;
+  // 旧セーブ互換：以前は枚数(数値)だったので、その場合は30%クーポンとして引き継ぐ
+  if (Array.isArray(data.discountCoupons)) {
+    s.discountCoupons = data.discountCoupons;
+  } else if (typeof data.discountCoupons === "number" && data.discountCoupons > 0) {
+    s.discountCoupons = new Array(data.discountCoupons).fill(30);
+  } else {
+    s.discountCoupons = [];
+  }
   s.kessanBonusPct = data.kessanBonusPct || 0;
   s.kessanFlatBonus = data.kessanFlatBonus || 0;
   s.milestonesHit = new Set(data.milestonesHit || []);
@@ -1511,6 +1782,9 @@ function deserializeState(data) {
     s.visitedCities = inferred;
   }
   s.missionsAchieved = new Set(data.missionsAchieved || []);
+  s.onLine = data.onLine || null;
+  s.triggeredEventTiles = data.triggeredEventTiles || [];
+  s.tutorialSeen = !!data.tutorialSeen;
   return s;
 }
 
@@ -1529,7 +1803,7 @@ function startNewGame() {
   renderCityPanel();
   setControlsEnabled(false);
   autoSave();
-  handleCityArrival("tokyo");
+  showTutorialModal(() => handleCityArrival("tokyo"));
 }
 
 function continueGame() {
@@ -1569,6 +1843,7 @@ function initRefs() {
   cityName = document.getElementById("cityName");
   cityCatch = document.getElementById("cityCatch");
   cityRegionBadge = document.getElementById("cityRegionBadge");
+  routeProgressEl = document.getElementById("routeProgress");
 
   diceFace = document.getElementById("diceFace");
   directionButtons = document.getElementById("directionButtons");
@@ -1606,9 +1881,8 @@ function wireEvents() {
   directionButtons.addEventListener("click", (e) => {
     const btn = e.target.closest(".dir-btn");
     if (!btn || btn.disabled) return;
-    const neighbor = { cityKey: btn.dataset.cityKey, lineKey: btn.dataset.lineKey, dir: Number(btn.dataset.dir) };
     setControlsEnabled(false);
-    rollDiceThenMove(neighbor);
+    rollDiceThenMove(btn.dataset.lineKey, Number(btn.dataset.dir));
   });
 
   shopBtn.addEventListener("click", () => {
@@ -1693,6 +1967,26 @@ function wireEvents() {
     const kessanBtn = e.target.closest('[data-action="kessan-confirm"]');
     if (kessanBtn) {
       confirmKessan();
+      return;
+    }
+    const missionRow = e.target.closest('[data-action="mission-detail"]');
+    if (missionRow) {
+      showMissionDetailModal(missionRow.dataset.mission);
+      return;
+    }
+    const missionBack = e.target.closest('[data-action="mission-back"]');
+    if (missionBack) {
+      (missionDetailReturnTo || showCollectionModal)();
+      return;
+    }
+    const missionListBtn = e.target.closest('[data-action="mission-list"]');
+    if (missionListBtn) {
+      showMissionListModal();
+      return;
+    }
+    const tutorialBtn = e.target.closest('[data-action="show-tutorial"]');
+    if (tutorialBtn) {
+      showTutorialModal(null);
       return;
     }
     const closeBtn = e.target.closest('[data-action="close-modal"]');

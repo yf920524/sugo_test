@@ -209,6 +209,15 @@ button{ font-family:inherit; cursor:pointer; border:none; }
   border-radius: 999px;
 }
 .city-region-badge.monopoly{ color: var(--good); background: rgba(82,201,138,.15); }
+.route-progress{
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--accent-2);
+  background: rgba(76,201,240,.1);
+  padding: 5px 10px;
+  border-radius: 999px;
+  display:inline-block;
+}
 
 /* ---- 操作エリア ---- */
 #controlArea{
@@ -358,6 +367,19 @@ button{ font-family:inherit; cursor:pointer; border:none; }
 }
 .quiz-reward{ color: var(--accent); font-weight:bold; margin-top:6px; }
 .quiz-unlock-note{ color: var(--good); font-weight:bold; margin-top:4px; }
+
+.shop-cash-bar{
+  position: sticky;
+  top: -18px;
+  z-index: 5;
+  background: var(--panel);
+  padding: 6px 10px;
+  margin: 0 -16px 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+  border-bottom: 1px solid rgba(255,255,255,.08);
+}
+.shop-cash-bar strong{ color: var(--accent); font-size: 15px; }
 
 .prop-list{ display:flex; flex-direction:column; gap:9px; margin: 10px 0; }
 .prop-card{
@@ -579,10 +601,37 @@ button{ font-family:inherit; cursor:pointer; border:none; }
   justify-content:space-between;
   align-items:center;
   font-size: 12.5px;
-  padding: 7px 2px;
+  padding: 9px 6px;
   border-bottom: 1px solid rgba(255,255,255,.06);
+  border-radius: 8px;
+  transition: background .1s;
 }
+.mission-row[data-action]{ cursor:pointer; }
+.mission-row[data-action]:active{ background: rgba(255,255,255,.08); }
 .mission-progress{ color: var(--accent); font-weight:bold; font-size: 11.5px; white-space:nowrap; }
+.mission-detail-list{ display:flex; flex-direction:column; gap:6px; margin: 10px 0; }
+.mission-detail-row{
+  display:flex;
+  align-items:center;
+  gap:9px;
+  background: var(--panel-light);
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: 13px;
+  opacity: .65;
+}
+.mission-detail-row.owned{ opacity: 1; }
+.mission-detail-check{ font-size: 16px; flex-shrink:0; }
+.mission-detail-reward{
+  text-align:center;
+  font-size: 15px;
+  color: var(--text-dim);
+  background: rgba(255,183,3,.12);
+  border-radius: 10px;
+  padding: 10px;
+  margin: 4px 0 6px;
+}
+.mission-detail-reward strong{ color: var(--accent); font-size: 18px; }
 
 .collection-overall{ text-align:center; margin: 4px 0 14px; }
 .collection-overall-pct{ font-size: 40px; font-weight:bold; color: var(--accent); }
@@ -608,6 +657,20 @@ button{ font-family:inherit; cursor:pointer; border:none; }
   border-radius: 999px;
 }
 .collection-pct{ flex-shrink:0; font-size: 11px; color: var(--text-dim); width: 44px; text-align:right; }
+
+.tutorial-list{ display:flex; flex-direction:column; gap:10px; margin: 14px 0 18px; }
+.tutorial-item{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  background: var(--panel-light);
+  border-radius: 12px;
+  padding: 11px 12px;
+  font-size: 13.5px;
+  line-height:1.5;
+}
+.tutorial-emoji{ font-size: 22px; flex-shrink:0; }
+.tutorial-item strong{ color: var(--accent); }
 
 .log-entry{
   font-size: 12.5px;
