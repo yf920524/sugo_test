@@ -12,6 +12,14 @@
    ============================================================ */
 
 // 地方データ。全都市を完全制覇すると「地方完全制覇」になる。
+// 同じ都道府県に属する都市どうしのグループ（クイズの「同都道府県」優先度に使用）。
+// 載っていない都市は都道府県内で1都市のみ扱い（＝都市優先度と都道府県優先度が実質同じ）。
+const PREF_GROUPS = [
+  ["yokohama", "odawara"], // 神奈川県
+  ["shizuoka", "hamamatsu"], // 静岡県
+  ["fukuoka", "kitakyushu"], // 福岡県
+];
+
 const REGIONS = [
   { key: "hokkaido", name: "北海道", icon: "❄️" },
   { key: "tohoku", name: "東北", icon: "🌲" },
@@ -66,7 +74,7 @@ const LINES = [
 const CITIES = [
   // ================= 関東 =================
   {
-    key: "tokyo", name: "東京", icon: "🗼", region: "kanto", size: "metro",
+    key: "tokyo", name: "東京", icon: "🗼", region: "kanto", size: "metro", coord: { x: 171, y: 241 },
     catch: "日本の首都、大都会！",
     properties: [
       { name: "下町のたい焼き屋", icon: "🐟", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -80,7 +88,7 @@ const CITIES = [
     ],
   },
   {
-    key: "yokohama", name: "横浜", icon: "⚓", region: "kanto", size: "metro",
+    key: "yokohama", name: "横浜", icon: "⚓", region: "kanto", size: "metro", coord: { x: 170, y: 248 },
     catch: "港とみなとみらいの街！",
     properties: [
       { name: "中華街の点心店", icon: "🥟", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
@@ -94,7 +102,7 @@ const CITIES = [
     ],
   },
   {
-    key: "odawara", name: "小田原", icon: "🏯", region: "kanto", size: "town",
+    key: "odawara", name: "小田原", icon: "🏯", region: "kanto", size: "town", coord: { x: 162, y: 253 },
     catch: "お城とかまぼこの町！",
     properties: [
       { name: "かまぼこ専門店", icon: "🐟", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -108,7 +116,7 @@ const CITIES = [
     ],
   },
   {
-    key: "chiba", name: "千葉", icon: "🥜", region: "kanto", size: "town",
+    key: "chiba", name: "千葉", icon: "🥜", region: "kanto", size: "town", coord: { x: 177, y: 243 },
     catch: "落花生と漁業、幕張の展示都市！",
     properties: [
       { name: "落花生農園", icon: "🥜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -120,7 +128,7 @@ const CITIES = [
     ],
   },
   {
-    key: "saitama", name: "さいたま", icon: "🚃", region: "kanto", size: "town",
+    key: "saitama", name: "さいたま", icon: "🚃", region: "kanto", size: "town", coord: { x: 170, y: 236 },
     catch: "鉄道と盆栽の街、交通の要衝！",
     properties: [
       { name: "大宮盆栽園", icon: "🌳", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -132,7 +140,7 @@ const CITIES = [
     ],
   },
   {
-    key: "utsunomiya", name: "宇都宮", icon: "🥟", region: "kanto", size: "town",
+    key: "utsunomiya", name: "宇都宮", icon: "🥟", region: "kanto", size: "town", coord: { x: 174, y: 216 },
     catch: "餃子といちご、関東平野の農業拠点！",
     properties: [
       { name: "餃子専門店", icon: "🥟", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -144,7 +152,7 @@ const CITIES = [
     ],
   },
   {
-    key: "takasaki", name: "高崎", icon: "🪅", region: "kanto", size: "town",
+    key: "takasaki", name: "高崎", icon: "🪅", region: "kanto", size: "town", coord: { x: 160, y: 223 },
     catch: "だるまとこんにゃく、新幹線分岐点！",
     properties: [
       { name: "高崎だるま工房", icon: "🪅", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -158,7 +166,7 @@ const CITIES = [
 
   // ================= 東北 =================
   {
-    key: "sendai", name: "仙台", icon: "🌲", region: "tohoku", size: "hub",
+    key: "sendai", name: "仙台", icon: "🌲", region: "tohoku", size: "hub", coord: { x: 189, y: 169 },
     catch: "杜の都、東北一の商都！",
     properties: [
       { name: "牛タン専門店", icon: "🐮", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -171,7 +179,7 @@ const CITIES = [
     ],
   },
   {
-    key: "morioka", name: "盛岡", icon: "🍜", region: "tohoku", size: "town",
+    key: "morioka", name: "盛岡", icon: "🍜", region: "tohoku", size: "town", coord: { x: 194, y: 129 },
     catch: "わんこそばと南部鉄器の町！",
     properties: [
       { name: "わんこそば屋", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -183,7 +191,7 @@ const CITIES = [
     ],
   },
   {
-    key: "fukushima", name: "福島", icon: "🍑", region: "tohoku", size: "town",
+    key: "fukushima", name: "福島", icon: "🍑", region: "tohoku", size: "town", coord: { x: 183, y: 183 },
     catch: "桃と果樹園、新幹線の交通拠点！",
     properties: [
       { name: "桃農園", icon: "🍑", tier: "A", price: 1100, yieldPct: 18, revenue: 198 },
@@ -195,7 +203,7 @@ const CITIES = [
     ],
   },
   {
-    key: "aomori", name: "青森", icon: "🍎", region: "tohoku", size: "town",
+    key: "aomori", name: "青森", icon: "🍎", region: "tohoku", size: "town", coord: { x: 187, y: 97 },
     catch: "りんごとねぶた祭り、津軽海峡の玄関口！",
     properties: [
       { name: "りんご農園", icon: "🍎", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -209,7 +217,7 @@ const CITIES = [
 
   // ================= 甲信越・北陸 =================
   {
-    key: "niigata", name: "新潟", icon: "🌾", region: "koshinetsu_hokuriku", size: "hub",
+    key: "niigata", name: "新潟", icon: "🌾", region: "koshinetsu_hokuriku", size: "hub", coord: { x: 160, y: 179 },
     catch: "コシヒカリと日本酒、日本海の港町！",
     properties: [
       { name: "コシヒカリ農園", icon: "🌾", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -222,7 +230,7 @@ const CITIES = [
     ],
   },
   {
-    key: "nagano", name: "長野", icon: "🍜", region: "koshinetsu_hokuriku", size: "town",
+    key: "nagano", name: "長野", icon: "🍜", region: "koshinetsu_hokuriku", size: "town", coord: { x: 147, y: 214 },
     catch: "そばと高原野菜、精密機械の街！",
     properties: [
       { name: "信州そば屋", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -234,7 +242,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kofu", name: "甲府", icon: "🍇", region: "koshinetsu_hokuriku", size: "town",
+    key: "kofu", name: "甲府", icon: "🍇", region: "koshinetsu_hokuriku", size: "town", coord: { x: 153, y: 242 },
     catch: "ぶどうとワイン、武田信玄の城下町！",
     properties: [
       { name: "ぶどう農園", icon: "🍇", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -246,7 +254,7 @@ const CITIES = [
     ],
   },
   {
-    key: "toyama", name: "富山", icon: "🦑", region: "koshinetsu_hokuriku", size: "town",
+    key: "toyama", name: "富山", icon: "🦑", region: "koshinetsu_hokuriku", size: "town", coord: { x: 131, y: 213 },
     catch: "配置薬とホタルイカ、黒部立山の玄関口！",
     properties: [
       { name: "配置薬の老舗", icon: "💊", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -258,7 +266,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kanazawa", name: "金沢", icon: "✨", region: "koshinetsu_hokuriku", size: "hub",
+    key: "kanazawa", name: "金沢", icon: "✨", region: "koshinetsu_hokuriku", size: "hub", coord: { x: 123, y: 217 },
     catch: "金箔と加賀友禅、伝統工芸の町！",
     properties: [
       { name: "金箔工房", icon: "✨", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
@@ -273,7 +281,7 @@ const CITIES = [
 
   // ================= 東海 =================
   {
-    key: "shizuoka", name: "静岡", icon: "🍵", region: "tokai", size: "hub",
+    key: "shizuoka", name: "静岡", icon: "🍵", region: "tokai", size: "hub", coord: { x: 150, y: 261 },
     catch: "お茶とわさびの名産地！",
     properties: [
       { name: "茶畑の直売所", icon: "🍵", tier: "A", price: 1100, yieldPct: 18, revenue: 198 },
@@ -287,7 +295,7 @@ const CITIES = [
     ],
   },
   {
-    key: "hamamatsu", name: "浜松", icon: "🎵", region: "tokai", size: "hub",
+    key: "hamamatsu", name: "浜松", icon: "🎵", region: "tokai", size: "hub", coord: { x: 140, y: 268 },
     catch: "楽器とうなぎの町！",
     properties: [
       { name: "うなぎ専門店", icon: "🐍", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -301,7 +309,7 @@ const CITIES = [
     ],
   },
   {
-    key: "nagoya", name: "名古屋", icon: "🏯", region: "tokai", size: "metro",
+    key: "nagoya", name: "名古屋", icon: "🏯", region: "tokai", size: "metro", coord: { x: 127, y: 255 },
     catch: "自動車と味噌の大都市！",
     properties: [
       { name: "八丁味噌の蔵", icon: "🍶", tier: "A", price: 1300, yieldPct: 17, revenue: 221 },
@@ -315,7 +323,7 @@ const CITIES = [
     ],
   },
   {
-    key: "gifu", name: "岐阜", icon: "🛶", region: "tokai", size: "town",
+    key: "gifu", name: "岐阜", icon: "🛶", region: "tokai", size: "town", coord: { x: 124, y: 248 },
     catch: "鵜飼いと和傘、長良川の町！",
     properties: [
       { name: "鵜飼い観光船", icon: "🛶", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -329,7 +337,7 @@ const CITIES = [
 
   // ================= 近畿 =================
   {
-    key: "kyoto", name: "京都", icon: "⛩️", region: "kansai", size: "metro",
+    key: "kyoto", name: "京都", icon: "⛩️", region: "kansai", size: "metro", coord: { x: 108, y: 260 },
     catch: "歴史あるみやこの町！",
     properties: [
       { name: "八つ橋の老舗", icon: "🍡", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
@@ -343,7 +351,7 @@ const CITIES = [
     ],
   },
   {
-    key: "osaka", name: "大阪", icon: "🐙", region: "kansai", size: "metro",
+    key: "osaka", name: "大阪", icon: "🐙", region: "kansai", size: "metro", coord: { x: 104, y: 269 },
     catch: "食い倒れの商都、天下の台所！",
     properties: [
       { name: "たこ焼き屋", icon: "🐙", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -357,7 +365,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kobe", name: "神戸", icon: "🌉", region: "kansai", size: "hub",
+    key: "kobe", name: "神戸", icon: "🌉", region: "kansai", size: "hub", coord: { x: 99, y: 269 },
     catch: "港とファッション、洋菓子の異人館通り！",
     properties: [
       { name: "神戸洋菓子店", icon: "🍰", tier: "A", price: 1300, yieldPct: 17, revenue: 221 },
@@ -370,7 +378,7 @@ const CITIES = [
     ],
   },
   {
-    key: "nara", name: "奈良", icon: "🦌", region: "kansai", size: "town",
+    key: "nara", name: "奈良", icon: "🦌", region: "kansai", size: "town", coord: { x: 109, y: 269 },
     catch: "鹿と大仏、古都の観光地！",
     properties: [
       { name: "鹿せんべい店", icon: "🦌", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -384,7 +392,7 @@ const CITIES = [
 
   // ================= 中国 =================
   {
-    key: "okayama", name: "岡山", icon: "🍑", region: "chugoku", size: "hub",
+    key: "okayama", name: "岡山", icon: "🍑", region: "chugoku", size: "hub", coord: { x: 79, y: 270 },
     catch: "白桃とマスカット、デニムの街！",
     properties: [
       { name: "白桃農園", icon: "🍑", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -397,7 +405,7 @@ const CITIES = [
     ],
   },
   {
-    key: "hiroshima", name: "広島", icon: "🦪", region: "chugoku", size: "hub",
+    key: "hiroshima", name: "広島", icon: "🦪", region: "chugoku", size: "hub", coord: { x: 56, y: 277 },
     catch: "牡蠣とお好み焼き、自動車と平和の街！",
     properties: [
       { name: "牡蠣養殖場", icon: "🦪", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -410,7 +418,7 @@ const CITIES = [
     ],
   },
   {
-    key: "tottori", name: "鳥取", icon: "🏜️", region: "chugoku", size: "town",
+    key: "tottori", name: "鳥取", icon: "🏜️", region: "chugoku", size: "town", coord: { x: 84, y: 246 },
     catch: "砂丘となし、松葉ガニの漁港！",
     properties: [
       { name: "二十世紀梨農園", icon: "🍐", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -422,7 +430,7 @@ const CITIES = [
     ],
   },
   {
-    key: "yamaguchi", name: "山口", icon: "🐡", region: "chugoku", size: "town",
+    key: "yamaguchi", name: "山口", icon: "🐡", region: "chugoku", size: "town", coord: { x: 40, y: 283 },
     catch: "ふぐと石油化学、関門海峡の玄関口！",
     properties: [
       { name: "ふぐ料理店", icon: "🐡", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -436,7 +444,7 @@ const CITIES = [
 
   // ================= 北海道 =================
   {
-    key: "sapporo", name: "札幌", icon: "❄️", region: "hokkaido", size: "metro",
+    key: "sapporo", name: "札幌", icon: "❄️", region: "hokkaido", size: "metro", coord: { x: 197, y: 35 },
     catch: "雪まつりとビール、北海道の中心都市！",
     properties: [
       { name: "味噌ラーメン店", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -450,7 +458,7 @@ const CITIES = [
     ],
   },
   {
-    key: "hakodate", name: "函館", icon: "🌃", region: "hokkaido", size: "town",
+    key: "hakodate", name: "函館", icon: "🌃", region: "hokkaido", size: "town", coord: { x: 187, y: 71 },
     catch: "夜景とイカ漁、五稜郭の港町！",
     properties: [
       { name: "イカ漁業組合", icon: "🦑", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -462,7 +470,7 @@ const CITIES = [
     ],
   },
   {
-    key: "asahikawa", name: "旭川", icon: "🪑", region: "hokkaido", size: "town",
+    key: "asahikawa", name: "旭川", icon: "🪑", region: "hokkaido", size: "town", coord: { x: 213, y: 15 },
     catch: "家具と動物園、雪の町！",
     properties: [
       { name: "しょうゆラーメン店", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -474,7 +482,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kushiro", name: "釧路", icon: "🦢", region: "hokkaido", size: "town",
+    key: "kushiro", name: "釧路", icon: "🦢", region: "hokkaido", size: "town", coord: { x: 245, y: 37 },
     catch: "漁業と湿原、酪農の町！",
     properties: [
       { name: "毛ガニ漁業組合", icon: "🦀", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -487,7 +495,7 @@ const CITIES = [
   },
   // ================= 四国 =================
   {
-    key: "takamatsu", name: "高松", icon: "🍜", region: "shikoku", size: "hub",
+    key: "takamatsu", name: "高松", icon: "🍜", region: "shikoku", size: "hub", coord: { x: 81, y: 279 },
     catch: "うどんと瀬戸内海、四国の玄関口！",
     properties: [
       { name: "讃岐うどん店", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -500,7 +508,7 @@ const CITIES = [
     ],
   },
   {
-    key: "matsuyama", name: "松山", icon: "♨️", region: "shikoku", size: "hub",
+    key: "matsuyama", name: "松山", icon: "♨️", region: "shikoku", size: "hub", coord: { x: 61, y: 293 },
     catch: "みかんと道後温泉、四国最大の城下町！",
     properties: [
       { name: "みかん農園", icon: "🍊", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -513,7 +521,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kochi", name: "高知", icon: "🐟", region: "shikoku", size: "town",
+    key: "kochi", name: "高知", icon: "🐟", region: "shikoku", size: "town", coord: { x: 73, y: 300 },
     catch: "カツオと坂本龍馬、太平洋の町！",
     properties: [
       { name: "カツオのたたき専門店", icon: "🐟", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -525,7 +533,7 @@ const CITIES = [
     ],
   },
   {
-    key: "tokushima", name: "徳島", icon: "💃", region: "shikoku", size: "town",
+    key: "tokushima", name: "徳島", icon: "💃", region: "shikoku", size: "town", coord: { x: 89, y: 286 },
     catch: "阿波おどりとすだち、渦潮の町！",
     properties: [
       { name: "すだち農園", icon: "🍈", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -538,7 +546,7 @@ const CITIES = [
   },
   // ================= 九州 =================
   {
-    key: "fukuoka", name: "福岡", icon: "🍜", region: "kyushu", size: "metro",
+    key: "fukuoka", name: "福岡", icon: "🍜", region: "kyushu", size: "metro", coord: { x: 23, y: 299 },
     catch: "とんこつラーメンと明太子、九州最大の商都！",
     properties: [
       { name: "とんこつラーメン店", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -552,7 +560,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kitakyushu", name: "北九州", icon: "🏭", region: "kyushu", size: "hub",
+    key: "kitakyushu", name: "北九州", icon: "🏭", region: "kyushu", size: "hub", coord: { x: 31, y: 291 },
     catch: "製鉄と関門海峡、工業の町！",
     properties: [
       { name: "門司港レトロ土産店", icon: "🏮", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
@@ -565,7 +573,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kumamoto", name: "熊本", icon: "🐴", region: "kyushu", size: "hub",
+    key: "kumamoto", name: "熊本", icon: "🐴", region: "kyushu", size: "hub", coord: { x: 29, y: 322 },
     catch: "馬肉と半導体、阿蘇の城下町！",
     properties: [
       { name: "馬肉料理店", icon: "🐴", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
@@ -578,7 +586,7 @@ const CITIES = [
     ],
   },
   {
-    key: "nagasaki", name: "長崎", icon: "🍰", region: "kyushu", size: "town",
+    key: "nagasaki", name: "長崎", icon: "🍰", region: "kyushu", size: "town", coord: { x: 15, y: 323 },
     catch: "カステラと造船、異国情緒の港町！",
     properties: [
       { name: "カステラ専門店", icon: "🍰", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -590,7 +598,7 @@ const CITIES = [
     ],
   },
   {
-    key: "oita", name: "大分", icon: "♨️", region: "kyushu", size: "town",
+    key: "oita", name: "大分", icon: "♨️", region: "kyushu", size: "town", coord: { x: 42, y: 309 },
     catch: "別府温泉とかぼす、一村一品の町！",
     properties: [
       { name: "かぼす農園", icon: "🍋", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -602,7 +610,7 @@ const CITIES = [
     ],
   },
   {
-    key: "miyazaki", name: "宮崎", icon: "🥭", region: "kyushu", size: "town",
+    key: "miyazaki", name: "宮崎", icon: "🥭", region: "kyushu", size: "town", coord: { x: 39, y: 346 },
     catch: "マンゴーと肉牛、南国リゾートの町！",
     properties: [
       { name: "マンゴー農園", icon: "🥭", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -614,7 +622,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kagoshima", name: "鹿児島", icon: "🌋", region: "kyushu", size: "hub",
+    key: "kagoshima", name: "鹿児島", icon: "🌋", region: "kyushu", size: "hub", coord: { x: 26, y: 355 },
     catch: "桜島と黒豚、焼酎の町！",
     properties: [
       { name: "黒豚料理店", icon: "🐷", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
@@ -628,7 +636,7 @@ const CITIES = [
   },
   // ================= 沖縄 =================
   {
-    key: "naha", name: "那覇", icon: "🌺", region: "okinawa", size: "hub",
+    key: "naha", name: "那覇", icon: "🌺", region: "okinawa", size: "hub", coord: { x: 55, y: 415 },
     catch: "南国リゾートと琉球文化の島！",
     properties: [
       { name: "シーサー工房", icon: "🦁", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },

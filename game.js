@@ -54,6 +54,7 @@ function freshState() {
     victoryAchieved: false,
     firstPurchaseDone: false,
     quizRecent: [],
+    quizAnsweredCorrectIds: [],
     logHistory: [],
     pendingKessan: false,
     turnCount: 0,
@@ -72,6 +73,9 @@ let currentQuizOptions = [];
 let currentQuizAnswered = false;
 let activeCityKey = null;
 let shopCloseCallback = null;
+let quizExtraAttempts = 0;
+let currentQuizIsExtra = false;
+const MAX_EXTRA_QUIZ_PER_VISIT = 2;
 
 // ============================================================
 // ユーティリティ
@@ -519,6 +523,7 @@ function handleCityArrival(cityKey) {
     renderHeader();
   }
 
+  quizExtraAttempts = 0;
   showQuizModal(cityKey, () => openCityShop(cityKey), false, extraBanners);
 }
 
@@ -627,15 +632,50 @@ function maybeTriggerEvent(cityKey, cont) {
 // ============================================================
 // クイズ
 // ============================================================
+// 都市の累計正解数から、その都市で出す問題の目標難易度Lv1〜4を決める。
+// 正解を積み重ねるほど難しい（＝報酬も大きい）問題が出るようになる。
+function targetDifficultyForCity(cityKey) {
+  const correct = state.cityQuizCorrect[cityKey] || 0;
+  if (correct >= 9) return 4;
+  if (correct >= 5) return 3;
+  if (correct >= 2) return 2;
+  return 1;
+}
+
+function getPrefMates(cityKey) {
+  const group = PREF_GROUPS.find((g) => g.includes(cityKey));
+  return group ? group.filter((k) => k !== cityKey) : [];
+}
+
+// 出題優先度：現在地の都市 → 同都道府県 → 同地方 → 全国、の順でフォールバック。
+// 一度正解した問題は（プールが尽きるまで）二度と出題しない。
 function pickQuiz(cityKey) {
-  const normalPool = QUIZ_BANK.filter((q) => q.difficulty <= 2);
-  const tagged = normalPool.filter((q) => q.tags && q.tags.includes(cityKey));
-  const pool = tagged.length && Math.random() < 0.7 ? tagged : normalPool;
-  return pickFromPool(pool);
+  const targetDiff = targetDifficultyForCity(cityKey);
+  const prefMates = getPrefMates(cityKey);
+  const region = getCity(cityKey).region;
+  const regionCities = CITIES.filter((c) => c.region === region).map((c) => c.key);
+  const byDiff = (q) => q.difficulty <= targetDiff;
+  const notAnsweredCorrect = (q) => !state.quizAnsweredCorrectIds.includes(QUIZ_BANK.indexOf(q));
+
+  const tierCity = QUIZ_BANK.filter((q) => byDiff(q) && q.tags && q.tags.includes(cityKey));
+  const tierPref = QUIZ_BANK.filter((q) => byDiff(q) && q.tags && q.tags.some((t) => prefMates.includes(t)));
+  const tierRegion = QUIZ_BANK.filter((q) => byDiff(q) && q.tags && q.tags.some((t) => regionCities.includes(t)));
+  const tierNational = QUIZ_BANK.filter(byDiff);
+
+  for (const tier of [tierCity, tierPref, tierRegion, tierNational]) {
+    const fresh = tier.filter(notAnsweredCorrect);
+    if (fresh.length) return pickFromPool(fresh);
+  }
+  // その難易度以下は全問正解済み → 難易度制限をゆるめて未正解の問題を探す
+  const anyFresh = QUIZ_BANK.filter(notAnsweredCorrect);
+  if (anyFresh.length) return pickFromPool(anyFresh);
+  // 全問正解済み（コレクション上級者向け）→ 繰り返し出題を許可
+  return pickFromPool(QUIZ_BANK);
 }
 function pickBonusQuiz() {
   const hardPool = QUIZ_BANK.filter((q) => q.difficulty >= 3);
-  return pickFromPool(hardPool.length ? hardPool : QUIZ_BANK);
+  const fresh = hardPool.filter((q) => !state.quizAnsweredCorrectIds.includes(QUIZ_BANK.indexOf(q)));
+  return pickFromPool(fresh.length ? fresh : hardPool.length ? hardPool : QUIZ_BANK);
 }
 function pickFromPool(pool) {
   let available = pool.filter((q) => !state.quizRecent.includes(QUIZ_BANK.indexOf(q)));
@@ -647,8 +687,11 @@ function pickFromPool(pool) {
   return q;
 }
 
-function applyQuizReward(isBonus) {
-  const mult = isBonus ? 2.5 : 1;
+function applyQuizReward(isBonus, isExtra, difficulty) {
+  const diffMult = 1 + Math.max(0, (difficulty || 1) - 1) * 0.35; // Lv1=1.0 / Lv2=1.35 / Lv3=1.7 / Lv4=2.05
+  let mult = diffMult;
+  if (isBonus) mult *= 2.5;
+  if (isExtra) mult *= 0.5; // 「もう1問挑戦」は解禁進捗メインなので報酬は控えめ
   const floor = (state.turnCount <= START_DASH_TURNS ? START_DASH_CASH_FLOOR : NORMAL_CASH_FLOOR) * mult;
   const roll = Math.random();
   if (roll < 0.4) {
@@ -666,10 +709,11 @@ function applyQuizReward(isBonus) {
   }
 }
 
-function showQuizModal(cityKey, onDone, isBonus, extraBanners) {
+function showQuizModal(cityKey, onDone, isBonus, extraBanners, isExtra) {
   quizOnDone = onDone;
   quizCityKey = cityKey;
   quizIsBonus = !!isBonus;
+  currentQuizIsExtra = !!isExtra;
   const q = quizIsBonus ? pickBonusQuiz() : pickQuiz(cityKey);
   currentQuizData = q;
   currentQuizAnswered = false;
@@ -684,9 +728,9 @@ function showQuizModal(cityKey, onDone, isBonus, extraBanners) {
   const optsHtml = currentQuizOptions
     .map((o, i) => `<button class="quiz-opt" data-action="quiz-opt" data-idx="${i}">${o.text}</button>`)
     .join("");
-  const title = quizIsBonus ? "🌟 ボーナスチャレンジ！" : "❓ クイズ！";
+  const title = quizIsBonus ? "🌟 ボーナスチャレンジ！" : currentQuizIsExtra ? "❓ 追加クイズ！" : "❓ クイズ！";
   setModalContent(`
-    <div class="modal-title">${title}</div>
+    <div class="modal-title">${title} <span style="font-size:11px;color:var(--text-dim);font-weight:normal;">Lv.${q.difficulty}</span></div>
     ${hintHtml}
     <p style="font-size:15px;font-weight:bold;line-height:1.6;">${q.q}</p>
     <div class="quiz-options" id="quizOptionsBox">${optsHtml}</div>
@@ -703,7 +747,9 @@ function onQuizOptionClick(idx) {
     state.quizCorrectTotal++;
     const beforeLocked = getLockedLandmarkIdxs(quizCityKey);
     state.cityQuizCorrect[quizCityKey] = (state.cityQuizCorrect[quizCityKey] || 0) + 1;
-    const rewardText = applyQuizReward(quizIsBonus);
+    const qIdx = QUIZ_BANK.indexOf(currentQuizData);
+    if (!state.quizAnsweredCorrectIds.includes(qIdx)) state.quizAnsweredCorrectIds.push(qIdx);
+    const rewardText = applyQuizReward(quizIsBonus, currentQuizIsExtra, currentQuizData.difficulty);
     rewardHtml = `<div class="quiz-reward">${rewardText}</div>`;
     const afterLocked = getLockedLandmarkIdxs(quizCityKey);
     const city = getCity(quizCityKey);
@@ -724,6 +770,13 @@ function onQuizOptionClick(idx) {
   resultBox.className = "quiz-result-box";
   resultBox.innerHTML = `<strong>${chosen.isCorrect ? "🎉 せいかい！" : "😵 ざんねん…"}</strong><br>${currentQuizData.explain}${rewardHtml}${unlockHtml}`;
   document.getElementById("quizOptionsBox").insertAdjacentElement("afterend", resultBox);
+  if (!quizIsBonus && quizExtraAttempts < MAX_EXTRA_QUIZ_PER_VISIT) {
+    const extraBtn = document.createElement("button");
+    extraBtn.className = "modal-close-btn secondary-outline";
+    extraBtn.setAttribute("data-action", "quiz-extra");
+    extraBtn.textContent = "🔥 もう1問挑戦する（ごほうび小・解禁進捗あり）";
+    modalBox.appendChild(extraBtn);
+  }
   const contBtn = document.createElement("button");
   contBtn.className = "modal-close-btn primary";
   contBtn.setAttribute("data-action", "quiz-continue");
@@ -829,7 +882,10 @@ function buildCityShopHtml(cityKey) {
           parts.push(`通常物件あと${Math.max(0, need - r.owned)}件`);
         }
         badge = `<span class="prop-badge locked-badge">🔒 ${parts.join("・")}で解禁</span>`;
-        buyEl = `<button class="prop-buy-btn" disabled>🔒 未解禁</button>`;
+        const quizCapped = quizExtraAttempts >= MAX_EXTRA_QUIZ_PER_VISIT;
+        buyEl = quizCapped
+          ? `<button class="prop-buy-btn" disabled>移動すると再挑戦可</button>`
+          : `<button class="prop-buy-btn" data-action="launch-quiz" data-city="${cityKey}">🎯 クイズに挑戦</button>`;
       } else {
         badge = `<span class="prop-badge">あと${remain}件で完全制覇</span>`;
         const label = discounted ? `割引 ${fmtMoney(price)}` : fmtMoney(price);
@@ -903,10 +959,16 @@ function buyProperty(cityKey, idx) {
   handlePurchaseCelebration(city, p, idx, newlyMonopoly, cityKey, newCombos, newlyUnlockedLandmarks, newMissions);
 }
 
+// 連鎖ミッション：unlockedBy が指定されている場合、先のミッションを達成するまで挑戦対象にならない
+function isMissionUnlocked(mission) {
+  return !mission.unlockedBy || state.missionsAchieved.has(mission.unlockedBy);
+}
+
 function checkNewMissions(propCityKey, propIdx) {
   const newlyCompleted = [];
   MISSIONS.forEach((mission) => {
     if (state.missionsAchieved.has(mission.key)) return;
+    if (!isMissionUnlocked(mission)) return;
     const isMember = mission.members.some((m) => m.city === propCityKey && m.idx === propIdx);
     if (!isMember) return;
     const allOwned = mission.members.every((m) => state.owned.has(propKey(m.city, m.idx)));
@@ -928,6 +990,7 @@ function getNearestMissionHint(cityKey) {
   let best = null;
   MISSIONS.forEach((mission) => {
     if (state.missionsAchieved.has(mission.key)) return;
+    if (!isMissionUnlocked(mission)) return;
     if (!mission.members.some((m) => m.city === cityKey)) return;
     const prog = getMissionProgress(mission);
     if (prog.remain === 0) return;
@@ -1128,24 +1191,135 @@ function showMapModal() {
   setAfterClose(null);
 }
 
+// ---- 都市の地図上の状態（色分け）判定。マップ全体・SVGどちらからも使う ----
+function getCityMapState(city) {
+  const isCurrent = city.key === state.currentCity;
+  const isMonopoly = state.monopolyCities.has(city.key);
+  const ownedCount = city.properties.filter((_, i) => state.owned.has(propKey(city.key, i))).length;
+  const remain = city.properties.length - ownedCount;
+  const visited = state.visitedCities.has(city.key) || ownedCount > 0;
+  const hasLandmark = city.properties.some((p, i) => p.tier === "E" && state.owned.has(propKey(city.key, i)));
+  let stateClass = "unvisited";
+  if (isMonopoly) stateClass = "monopoly";
+  else if (hasLandmark) stateClass = "landmark";
+  else if (remain === 1 && ownedCount > 0) stateClass = "near";
+  else if (visited) stateClass = "visited";
+  return { isCurrent, isMonopoly, hasLandmark, remain, ownedCount, visited, stateClass };
+}
+
+const MAP_STATE_COLOR = {
+  unvisited: "#5c7185",
+  visited: "#cfe0f0",
+  near: "#ff6b6b",
+  landmark: "#4cc9f0",
+  monopoly: "#52c98a",
+};
+const MODE_COLOR = { rail: "#4cc9f0", highway: "#ffb703", flight: "#c98bf5" };
+const SPECIAL_ICON = { tunnel: "🚇", bridge: "🌉", strait: "🌊", flight: "✈️" };
+
+// ---- 凸包（Graham scan）+外側にふくらませて「陸地シルエット」のヒントを作る ----
+function convexHull(points) {
+  if (points.length < 3) return points;
+  const pts = points.slice().sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
+function silhouettePath(points, padding) {
+  if (points.length === 0) return "";
+  if (points.length === 1) {
+    const p = points[0];
+    return `M ${p.x - padding},${p.y} a ${padding},${padding} 0 1,0 ${padding * 2},0 a ${padding},${padding} 0 1,0 ${-padding * 2},0`;
+  }
+  const hull = convexHull(points);
+  const cx = hull.reduce((s, p) => s + p.x, 0) / hull.length;
+  const cy = hull.reduce((s, p) => s + p.y, 0) / hull.length;
+  const expanded = hull.map((p) => {
+    const dx = p.x - cx, dy = p.y - cy;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    return { x: p.x + (dx / len) * padding, y: p.y + (dy / len) * padding };
+  });
+  return "M " + expanded.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" L ") + " Z";
+}
+
+const LANDMASS_GROUPS = [
+  { key: "hokkaido", regions: ["hokkaido"] },
+  { key: "honshu", regions: ["tohoku", "kanto", "koshinetsu_hokuriku", "tokai", "kansai", "chugoku"] },
+  { key: "shikoku", regions: ["shikoku"] },
+  { key: "kyushu", regions: ["kyushu"] },
+  { key: "okinawa", regions: ["okinawa"] },
+];
+
+function buildMapSvg() {
+  const W = 260, H = 440;
+  const silhouettes = LANDMASS_GROUPS.map((g) => {
+    const pts = CITIES.filter((c) => g.regions.includes(c.region)).map((c) => c.coord);
+    return `<path d="${silhouettePath(pts, 16)}" fill="#2a4a63" opacity="0.55" />`;
+  }).join("");
+
+  const linesHtml = LINES.map((line) => {
+    const modes = Array.isArray(line.mode) ? line.mode : [line.mode];
+    const color = MODE_COLOR[modes[0]] || MODE_COLOR.rail;
+    const dash = modes[0] === "highway" ? "5,4" : modes[0] === "flight" ? "2,4" : "none";
+    const width = line.special ? 3 : 1.6;
+    const pts = line.cities.map((ck) => getCity(ck).coord);
+    const pointsAttr = pts.map((p) => `${p.x},${p.y}`).join(" ");
+    let mid = "";
+    if (line.special) {
+      const a = pts[0], b = pts[1] || pts[0];
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      mid = `<text x="${mx}" y="${my - 3}" font-size="9" text-anchor="middle">${SPECIAL_ICON[line.special] || ""}</text>`;
+    }
+    return `<polyline points="${pointsAttr}" fill="none" stroke="${color}" stroke-width="${width}" stroke-dasharray="${dash}" stroke-linecap="round" stroke-linejoin="round" opacity="0.85" />${mid}`;
+  }).join("");
+
+  const gapY = 398;
+  const gapHtml = `<line x1="0" y1="${gapY}" x2="${W}" y2="${gapY}" stroke="#4cc9f0" stroke-width="1" stroke-dasharray="3,4" opacity="0.4" />
+    <text x="${W / 2}" y="${gapY + 12}" font-size="8.5" text-anchor="middle" fill="#a9bdd4">🌊 海（沖縄へは飛行機のみで移動）</text>`;
+
+  const labelCities = CITIES.filter((c) => c.size === "metro" || c.size === "hub" || c.key === state.currentCity);
+  const dotsHtml = CITIES.map((city) => {
+    const st = getCityMapState(city);
+    const color = MAP_STATE_COLOR[st.stateClass];
+    const r = st.isCurrent ? 6.5 : city.size === "metro" ? 4.5 : city.size === "hub" ? 3.6 : 2.8;
+    const ring = st.isCurrent ? `<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r + 3}" fill="none" stroke="#ffb703" stroke-width="1.6"><animate attributeName="r" values="${r + 3};${r + 5};${r + 3}" dur="1.6s" repeatCount="indefinite" /></circle>` : "";
+    const badge = st.isMonopoly ? "👑" : st.hasLandmark ? "🏙️" : st.remain === 1 && st.ownedCount > 0 ? "🔥" : "";
+    const showLabel = labelCities.includes(city);
+    const label = showLabel
+      ? `<text x="${city.coord.x}" y="${city.coord.y - r - 3}" font-size="${st.isCurrent ? 9 : 7}" text-anchor="middle" fill="${st.isCurrent ? "#ffb703" : "#e8eef5"}" font-weight="${st.isCurrent ? "bold" : "normal"}">${city.name}${badge}</text>`
+      : "";
+    return `<g>${ring}<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r}" fill="${color}" stroke="#0f2540" stroke-width="1"><title>${city.name}${badge}</title></circle>${label}</g>`;
+  }).join("");
+
+  return `<svg viewBox="0 0 ${W} ${H}" class="japan-map-svg" xmlns="http://www.w3.org/2000/svg">
+    ${silhouettes}
+    ${linesHtml}
+    ${gapHtml}
+    ${dotsHtml}
+  </svg>`;
+}
+
 function buildMapHtml() {
   const regionsHtml = REGIONS.map((region) => {
     const cities = CITIES.filter((c) => c.region === region.key);
     const conquered = state.regionConquered.has(region.key);
     const chips = cities
       .map((city) => {
-        const isCurrent = city.key === state.currentCity;
-        const isMonopoly = state.monopolyCities.has(city.key);
-        const ownedCount = city.properties.filter((_, i) => state.owned.has(propKey(city.key, i))).length;
-        const remain = city.properties.length - ownedCount;
-        const visited = state.visitedCities.has(city.key) || ownedCount > 0;
-        const hasLandmark = city.properties.some((p, i) => p.tier === "E" && state.owned.has(propKey(city.key, i)));
-        let stateClass = "unvisited";
-        if (isMonopoly) stateClass = "monopoly";
-        else if (hasLandmark) stateClass = "landmark";
-        else if (remain === 1 && ownedCount > 0) stateClass = "near";
-        else if (visited) stateClass = "visited";
-        return `<span class="map-chip ${stateClass} ${isCurrent ? "current" : ""}">${city.icon} ${city.name}${isMonopoly ? " 👑" : hasLandmark ? " 🏙️" : remain === 1 && ownedCount > 0 ? " 🔥" : ""}${isCurrent ? " 📍" : ""}</span>`;
+        const st = getCityMapState(city);
+        return `<span class="map-chip ${st.stateClass} ${st.isCurrent ? "current" : ""}">${city.icon} ${city.name}${st.isMonopoly ? " 👑" : st.hasLandmark ? " 🏙️" : st.remain === 1 && st.ownedCount > 0 ? " 🔥" : ""}${st.isCurrent ? " 📍" : ""}</span>`;
       })
       .join("");
     return `<div class="overview-city">
@@ -1163,6 +1337,7 @@ function buildMapHtml() {
   }).join("");
 
   return `<div class="modal-title">🗺️ 全国マップ</div>
+    <div class="map-svg-wrap">${buildMapSvg()}</div>
     <div class="map-legend">
       <span class="map-chip current">📍現在地</span>
       <span class="map-chip unvisited">未訪問</span>
@@ -1171,8 +1346,9 @@ function buildMapHtml() {
       <span class="map-chip landmark">🏙️ランドマーク解禁</span>
       <span class="map-chip monopoly">👑完全制覇</span>
     </div>
+    <div class="modal-sub">🚄鉄道（水色線）／🛣️高速道路（オレンジ点線）／✈️空路（紫の点線）。橋・トンネル・海峡は太線＋アイコンつき。</div>
     ${regionsHtml}
-    <div class="modal-sub" style="margin-top:14px;">🔗 主要ルート（🚄鉄道／🛣️高速道路／✈️空路）</div>
+    <div class="modal-sub" style="margin-top:14px;">🔗 主要ルート一覧</div>
     <div class="route-list">${routesHtml}</div>
     <button class="modal-close-btn primary" data-action="close-modal">とじる</button>`;
 }
@@ -1218,7 +1394,7 @@ function buildCollectionHtml() {
     return `<span class="mini-chip ${done ? "owned" : ""}">${combo.icon} ${combo.name}${done ? " ✓" : ""}</span>`;
   }).join("");
 
-  const pendingMissions = MISSIONS.filter((m) => !state.missionsAchieved.has(m.key))
+  const pendingMissions = MISSIONS.filter((m) => !state.missionsAchieved.has(m.key) && isMissionUnlocked(m))
     .map((m) => ({ m, prog: getMissionProgress(m) }))
     .sort((a, b) => a.prog.remain - b.prog.remain)
     .slice(0, 3);
@@ -1292,6 +1468,7 @@ function serializeState() {
     victoryAchieved: state.victoryAchieved,
     firstPurchaseDone: state.firstPurchaseDone,
     quizRecent: state.quizRecent,
+    quizAnsweredCorrectIds: state.quizAnsweredCorrectIds,
     logHistory: state.logHistory.slice(-150),
     pendingKessan: state.pendingKessan,
     turnCount: state.turnCount,
@@ -1320,6 +1497,7 @@ function deserializeState(data) {
   s.victoryAchieved = !!data.victoryAchieved;
   s.firstPurchaseDone = !!data.firstPurchaseDone;
   s.quizRecent = data.quizRecent || [];
+  s.quizAnsweredCorrectIds = data.quizAnsweredCorrectIds || [];
   s.logHistory = data.logHistory || [];
   s.pendingKessan = !!data.pendingKessan;
   s.turnCount = data.turnCount || 0;
@@ -1469,6 +1647,20 @@ function wireEvents() {
         if (wasBonus) fn();
         else maybeOfferBonusChallenge(fn);
       }
+      return;
+    }
+    const extraQuizBtn = e.target.closest('[data-action="quiz-extra"]');
+    if (extraQuizBtn) {
+      quizExtraAttempts++;
+      showQuizModal(quizCityKey, quizOnDone, false, [], true);
+      return;
+    }
+    const launchQuizBtn = e.target.closest('[data-action="launch-quiz"]');
+    if (launchQuizBtn && !launchQuizBtn.disabled) {
+      const ck = launchQuizBtn.dataset.city;
+      if (quizExtraAttempts >= MAX_EXTRA_QUIZ_PER_VISIT) return;
+      quizExtraAttempts++;
+      showQuizModal(ck, () => renderCityShopContent(ck), false, [], true);
       return;
     }
     const bonusAccept = e.target.closest('[data-action="bonus-accept"]');
