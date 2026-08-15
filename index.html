@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#1e3a5f">
+<title>にっぽん物件王 - 東京から大阪まで買い占めろ！</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏯</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ===== スタート画面 ===== -->
+  <section id="startScreen" class="screen">
+    <div class="start-card">
+      <div class="start-emoji">🏯🚃🐙</div>
+      <h1>にっぽん物件王</h1>
+      <p class="start-sub">東京 → 大阪　すごろく買い占めゲーム</p>
+      <p class="start-desc">サイコロで街から街へ移動して、物件をどんどん買い占めよう！<br>同じ街の物件を全部買うと収益が2倍になるよ。</p>
+      <button id="startBtn" class="big-btn">▶ ゲームスタート</button>
+      <p class="start-note">ゴールの大阪をめざしながら、資産を増やそう！</p>
+    </div>
+  </section>
+
+  <!-- ===== ゲーム画面 ===== -->
+  <section id="gameScreen" class="screen hidden">
+
+    <!-- ステータスバー -->
+    <header id="statusBar">
+      <div class="stat-row">
+        <div class="stat stat-location">
+          <span class="stat-icon">📍</span>
+          <span id="statLocation" class="stat-value">東京</span>
+        </div>
+        <button id="overviewBtn" class="icon-btn" title="全物件を見る">🗺️<span class="icon-btn-label">物件マップ</span></button>
+      </div>
+      <div class="stat-grid">
+        <div class="stat"><span class="stat-icon">💰</span><span id="statCash" class="stat-value">0</span><span class="stat-unit">万円</span></div>
+        <div class="stat"><span class="stat-icon">📈</span><span id="statAssets" class="stat-value">0</span><span class="stat-unit">万円</span></div>
+        <div class="stat"><span class="stat-icon">🏢</span><span id="statProps" class="stat-value">0</span><span class="stat-unit">件</span></div>
+        <div class="stat"><span class="stat-icon">👑</span><span id="statMonopoly" class="stat-value">0</span><span class="stat-unit">都市独占</span></div>
+      </div>
+      <div class="goal-bar-wrap">
+        <span class="goal-label">ゴールまで</span>
+        <div class="goal-bar"><div id="goalBarFill" class="goal-bar-fill"></div></div>
+        <span id="statDistance" class="goal-dist">0マス</span>
+      </div>
+    </header>
+
+    <!-- すごろく盤（横スクロール） -->
+    <div id="boardStripWrap">
+      <div id="boardStrip"></div>
+    </div>
+
+    <!-- メッセージログ -->
+    <div id="messageLog"></div>
+
+    <!-- 収益ティッカー -->
+    <div id="incomeFloat" class="income-float hidden"></div>
+
+    <!-- サイコロ操作 -->
+    <div id="controls">
+      <div id="diceFace">🎲</div>
+      <button id="diceBtn" class="big-btn">サイコロを振る</button>
+    </div>
+
+  </section>
+
+  <!-- ===== モーダル ===== -->
+  <div id="modalRoot" class="modal-overlay hidden">
+    <div id="modalBox" class="modal-box"></div>
+  </div>
+
+</div>
+
+<script src="data.js"></script>
+<script src="game.js"></script>
+</body>
+</html>

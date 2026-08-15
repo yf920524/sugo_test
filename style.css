@@ -1,0 +1,502 @@
+/* ============================================================
+   にっぽん物件王 - スタイル
+   ============================================================ */
+
+:root{
+  --bg: #0f2540;
+  --panel: #16324f;
+  --panel-light: #1e3f61;
+  --accent: #ffb703;
+  --accent-2: #4cc9f0;
+  --good: #52c98a;
+  --bad: #ff6b6b;
+  --text: #f4f7fb;
+  --text-dim: #a9bdd4;
+  --radius: 16px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+*{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html,body{
+  margin:0; padding:0; height:100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Hiragino Maru Gothic ProN","Hiragino Sans","Yu Gothic",-apple-system,BlinkMacSystemFont,sans-serif;
+  overscroll-behavior-y: contain;
+  touch-action: manipulation;
+}
+
+#app{
+  max-width: 480px;
+  margin: 0 auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display:flex;
+  flex-direction:column;
+  position:relative;
+  background: linear-gradient(180deg,#0f2540 0%,#0a1c33 100%);
+}
+
+.hidden{ display:none !important; }
+
+button{ font-family:inherit; cursor:pointer; border:none; }
+
+/* ===== スタート画面 ===== */
+#startScreen{
+  flex:1;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding: 24px;
+}
+.start-card{
+  text-align:center;
+  background: var(--panel);
+  border-radius: 24px;
+  padding: 32px 24px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  width:100%;
+}
+.start-emoji{ font-size: 42px; margin-bottom: 8px; letter-spacing: 6px; }
+.start-card h1{
+  font-size: 28px;
+  margin: 8px 0 4px;
+  background: linear-gradient(90deg,#ffb703,#ffd166);
+  -webkit-background-clip:text;
+  background-clip:text;
+  color:transparent;
+}
+.start-sub{ color: var(--accent-2); font-weight:bold; margin: 4px 0 16px; }
+.start-desc{ color: var(--text-dim); font-size: 14px; line-height:1.7; margin-bottom: 24px; }
+.start-note{ color: var(--text-dim); font-size: 12px; margin-top: 14px; }
+
+.big-btn{
+  display:block;
+  width:100%;
+  padding: 16px;
+  font-size: 18px;
+  font-weight: bold;
+  color: #1a1a1a;
+  background: linear-gradient(180deg,#ffd166,#ffb703);
+  border-radius: 999px;
+  box-shadow: 0 6px 0 #c98a02, 0 8px 16px rgba(0,0,0,.3);
+  transition: transform .08s, box-shadow .08s;
+}
+.big-btn:active{
+  transform: translateY(4px);
+  box-shadow: 0 2px 0 #c98a02, 0 4px 8px rgba(0,0,0,.3);
+}
+.big-btn:disabled{
+  opacity:.5;
+  box-shadow:none;
+  transform:none;
+}
+
+/* ===== ゲーム画面 ===== */
+#gameScreen{
+  flex:1;
+  display:flex;
+  flex-direction:column;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+#statusBar{
+  background: var(--panel);
+  padding: 10px 12px 12px;
+  border-bottom: 3px solid var(--panel-light);
+  position: sticky;
+  top:0;
+  z-index: 5;
+}
+.stat-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom: 8px;
+}
+.stat-location{
+  font-size: 15px;
+  font-weight:bold;
+  background: rgba(76,201,240,.15);
+  padding: 5px 12px;
+  border-radius: 999px;
+}
+.icon-btn{
+  background: var(--panel-light);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+  display:flex;
+  align-items:center;
+  gap:4px;
+}
+.icon-btn-label{ font-size:12px; }
+
+.stat-grid{
+  display:grid;
+  grid-template-columns: repeat(4,1fr);
+  gap:6px;
+}
+.stat{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  background: var(--panel-light);
+  border-radius: 10px;
+  padding: 6px 2px;
+  font-size: 11px;
+  line-height:1.3;
+}
+.stat-icon{ font-size: 15px; }
+.stat-value{
+  font-weight:bold;
+  font-size: 14px;
+  color: var(--accent);
+}
+.stat-unit{ font-size: 9px; color: var(--text-dim); }
+
+.goal-bar-wrap{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin-top:8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.goal-label{ white-space:nowrap; }
+.goal-bar{
+  flex:1;
+  height:8px;
+  background: rgba(255,255,255,.1);
+  border-radius: 999px;
+  overflow:hidden;
+}
+.goal-bar-fill{
+  height:100%;
+  width:0%;
+  background: linear-gradient(90deg,#4cc9f0,#52c98a);
+  border-radius: 999px;
+  transition: width .5s ease;
+}
+.goal-dist{ white-space:nowrap; }
+
+/* ===== すごろく盤 ===== */
+#boardStripWrap{
+  background: #0c2038;
+  padding: 10px 0;
+  border-bottom: 2px solid var(--panel-light);
+}
+#boardStrip{
+  display:flex;
+  align-items:center;
+  gap:4px;
+  overflow-x:auto;
+  padding: 4px 12px 10px;
+  scroll-behavior: smooth;
+}
+#boardStrip::-webkit-scrollbar{ height:4px; }
+#boardStrip::-webkit-scrollbar-thumb{ background: var(--panel-light); border-radius:4px; }
+
+.cell{
+  position:relative;
+  min-width: 36px;
+  height: 36px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size: 16px;
+  background: var(--panel);
+  border-radius: 8px;
+  flex-shrink:0;
+  border: 2px solid transparent;
+}
+.cell.city{
+  background: var(--panel-light);
+  border-color: rgba(255,183,3,.4);
+  min-width: 44px;
+  font-size: 19px;
+}
+.cell.owned-city{ border-color: var(--accent); }
+.cell.monopoly-city{ border-color: var(--good); box-shadow: 0 0 8px rgba(82,201,138,.6); }
+.cell.visited{ opacity:.55; }
+.cell .player-marker{
+  position:absolute;
+  top:-20px;
+  left:50%;
+  transform:translateX(-50%);
+  font-size: 20px;
+  animation: bounce 1s infinite;
+}
+@keyframes bounce{
+  0%,100%{ transform:translateX(-50%) translateY(0); }
+  50%{ transform:translateX(-50%) translateY(-4px); }
+}
+
+/* ===== メッセージログ ===== */
+#messageLog{
+  flex:1;
+  overflow-y:auto;
+  padding: 10px 14px;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+.log-line{
+  font-size: 13px;
+  color: var(--text-dim);
+  background: rgba(255,255,255,.04);
+  padding: 8px 12px;
+  border-radius: 10px;
+  animation: fadeIn .25s ease;
+}
+.log-line.log-good{ color: var(--good); }
+.log-line.log-bad{ color: var(--bad); }
+.log-line.log-highlight{ color: var(--accent); font-weight:bold; }
+@keyframes fadeIn{ from{ opacity:0; transform:translateY(4px);} to{opacity:1; transform:translateY(0);} }
+
+/* ===== 収益フロート ===== */
+.income-float{
+  position:absolute;
+  top: 120px;
+  left:50%;
+  transform: translateX(-50%);
+  background: var(--good);
+  color:#08331d;
+  font-weight:bold;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  z-index: 20;
+  animation: floatUp 1.4s ease forwards;
+  pointer-events:none;
+}
+@keyframes floatUp{
+  0%{ opacity:0; transform: translateX(-50%) translateY(10px); }
+  15%{ opacity:1; transform: translateX(-50%) translateY(0); }
+  75%{ opacity:1; }
+  100%{ opacity:0; transform: translateX(-50%) translateY(-24px); }
+}
+
+/* ===== サイコロ操作 ===== */
+#controls{
+  padding: 14px 16px calc(16px + var(--safe-bottom));
+  background: var(--panel);
+  border-top: 3px solid var(--panel-light);
+  text-align:center;
+}
+#diceFace{
+  font-size: 40px;
+  margin-bottom: 8px;
+  transition: transform .1s;
+}
+#diceFace.rolling{ animation: shake .1s infinite; }
+@keyframes shake{
+  0%{ transform: rotate(-8deg); }
+  50%{ transform: rotate(8deg); }
+  100%{ transform: rotate(-8deg); }
+}
+
+/* ===== モーダル ===== */
+.modal-overlay{
+  position: fixed;
+  inset:0;
+  max-width:480px;
+  margin:0 auto;
+  background: rgba(5,15,28,.72);
+  display:flex;
+  align-items:flex-end;
+  justify-content:center;
+  z-index: 100;
+  animation: fadeIn .2s ease;
+}
+.modal-box{
+  width:100%;
+  max-height: 88vh;
+  overflow-y:auto;
+  background: var(--panel);
+  border-radius: 22px 22px 0 0;
+  padding: 20px 18px calc(20px + var(--safe-bottom));
+  animation: slideUp .25s cubic-bezier(.2,.8,.3,1);
+  box-shadow: 0 -8px 24px rgba(0,0,0,.4);
+}
+@keyframes slideUp{
+  from{ transform: translateY(30px); opacity:0; }
+  to{ transform: translateY(0); opacity:1; }
+}
+
+.modal-title{
+  font-size: 18px;
+  font-weight:bold;
+  margin: 0 0 12px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.modal-sub{ color: var(--text-dim); font-size: 13px; margin-bottom: 14px; }
+
+.quiz-options{ display:flex; flex-direction:column; gap:8px; margin: 14px 0; }
+.quiz-opt{
+  background: var(--panel-light);
+  color: var(--text);
+  padding: 13px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  text-align:left;
+  transition: transform .1s, background .15s;
+}
+.quiz-opt:active{ transform: scale(.98); }
+.quiz-opt.correct{ background: var(--good); color:#08331d; font-weight:bold; }
+.quiz-opt.wrong{ background: var(--bad); color:#380808; font-weight:bold; }
+.quiz-opt:disabled{ opacity:.75; }
+
+.quiz-result-box{
+  background: rgba(255,255,255,.06);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 10px 0;
+  font-size: 13px;
+  line-height:1.6;
+}
+.quiz-reward{ color: var(--accent); font-weight:bold; margin-top:6px; }
+
+.prop-list{ display:flex; flex-direction:column; gap:10px; margin: 12px 0; }
+.prop-card{
+  background: var(--panel-light);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  border: 2px solid transparent;
+}
+.prop-card.owned{ border-color: var(--good); opacity:.85; }
+.prop-icon{ font-size: 26px; width:36px; text-align:center; }
+.prop-info{ flex:1; min-width:0; }
+.prop-name{ font-weight:bold; font-size: 14px; }
+.prop-detail{ font-size: 11px; color: var(--text-dim); margin-top:2px; }
+.prop-badge{
+  display:inline-block;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-top:4px;
+  background: rgba(255,183,3,.18);
+  color: var(--accent);
+}
+.prop-badge.owned-badge{ background: rgba(82,201,138,.2); color: var(--good); }
+.prop-buy-btn{
+  background: var(--accent);
+  color:#1a1a1a;
+  font-weight:bold;
+  font-size: 12px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  white-space:nowrap;
+}
+.prop-buy-btn:disabled{ background:#3a4a5c; color: var(--text-dim); }
+.prop-buy-btn.discounted{ background: var(--good); color:#08331d; }
+
+.city-monopoly-banner{
+  background: linear-gradient(90deg,#ffb703,#ffd166);
+  color:#3a2600;
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-weight:bold;
+  font-size: 13px;
+  text-align:center;
+  margin-bottom: 10px;
+}
+
+.modal-close-btn{
+  display:block;
+  width:100%;
+  margin-top: 14px;
+  padding: 14px;
+  background: var(--panel-light);
+  color: var(--text);
+  border-radius: 12px;
+  font-weight:bold;
+  font-size: 15px;
+}
+.modal-close-btn.primary{
+  background: linear-gradient(180deg,#ffd166,#ffb703);
+  color:#1a1a1a;
+}
+
+/* ===== 独占演出 ===== */
+.monopoly-celebrate{
+  text-align:center;
+  padding: 10px 0 4px;
+}
+.monopoly-celebrate .big-emoji{
+  font-size: 56px;
+  animation: pop .5s cubic-bezier(.3,1.5,.5,1);
+}
+@keyframes pop{
+  0%{ transform: scale(0); }
+  70%{ transform: scale(1.2); }
+  100%{ transform: scale(1); }
+}
+.confetti-row{ font-size: 22px; letter-spacing: 8px; margin: 6px 0; }
+
+/* ===== 全物件マップ ===== */
+.overview-city{ margin-bottom: 16px; }
+.overview-city-head{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-weight:bold;
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+.overview-city-head .badge-mini{
+  font-size: 10px;
+  background: rgba(255,255,255,.1);
+  padding: 2px 8px;
+  border-radius:999px;
+  color: var(--text-dim);
+}
+.overview-city-head .badge-mini.done{ background: rgba(82,201,138,.25); color: var(--good); }
+.overview-props-mini{ display:flex; flex-wrap:wrap; gap:6px; }
+.mini-chip{
+  font-size: 11px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--panel-light);
+  color: var(--text-dim);
+}
+.mini-chip.owned{ background: rgba(82,201,138,.2); color: var(--good); }
+
+/* ===== 結果画面 ===== */
+.result-score{
+  text-align:center;
+  font-size: 40px;
+  font-weight:bold;
+  color: var(--accent);
+  margin: 6px 0;
+}
+.result-rank{
+  text-align:center;
+  font-size: 20px;
+  font-weight:bold;
+  margin-bottom: 12px;
+  color: var(--accent-2);
+}
+.result-table{ width:100%; border-collapse: collapse; margin: 10px 0; }
+.result-table td{ padding: 8px 4px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,.08); }
+.result-table td:last-child{ text-align:right; font-weight:bold; color: var(--accent); }
+
+/* ===== トースト ===== */
+.toast-icon{ font-size: 40px; text-align:center; margin-bottom: 8px; }
+.toast-text{ text-align:center; font-size: 15px; margin-bottom: 4px; }
+.toast-amount{ text-align:center; font-size: 22px; font-weight:bold; }
+.toast-amount.good{ color: var(--good); }
+.toast-amount.bad{ color: var(--bad); }
+
+@media (max-height: 640px){
+  .stat{ font-size: 10px; padding: 4px 2px; }
+  #diceFace{ font-size: 32px; }
+}
