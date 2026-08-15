@@ -1374,6 +1374,120 @@ function showLogModal() {
 function showMapModal() {
   setModalContent(buildMapHtml());
   setAfterClose(null);
+  requestAnimationFrame(() => {
+    wireMapGestures();
+    mapFitAll();
+  });
+}
+
+// ============================================================
+// 全国マップのズーム／パン操作（ピンチ・ドラッグ・ボタン）
+// ============================================================
+let mapView = { scale: 1, tx: 0, ty: 0 };
+const MAP_SCALE_MIN = 0.3;
+const MAP_SCALE_MAX = 4;
+let mapPointers = new Map();
+let mapDragLast = null;
+let mapPinchStartDist = null;
+let mapPinchStartScale = 1;
+
+function clampMapScale(s) {
+  return Math.min(MAP_SCALE_MAX, Math.max(MAP_SCALE_MIN, s));
+}
+function applyMapTransform() {
+  const canvas = document.getElementById("mapCanvas");
+  if (canvas) canvas.style.transform = `translate(${mapView.tx}px, ${mapView.ty}px) scale(${mapView.scale})`;
+}
+function mapWorldToCanvasPx(x, y) {
+  return { x: (x - MAP_VIEWBOX.minX) * MAP_PX_PER_UNIT, y: (y - MAP_VIEWBOX.minY) * MAP_PX_PER_UNIT };
+}
+function mapZoom(factor) {
+  mapView.scale = clampMapScale(mapView.scale * factor);
+  applyMapTransform();
+}
+function mapFitAll() {
+  const viewport = document.getElementById("mapViewport");
+  if (!viewport) return;
+  const vw = viewport.clientWidth, vh = viewport.clientHeight;
+  const canvasW = MAP_VIEWBOX.w * MAP_PX_PER_UNIT, canvasH = MAP_VIEWBOX.h * MAP_PX_PER_UNIT;
+  if (!vw || !vh) return;
+  const scale = clampMapScale(Math.min(vw / canvasW, vh / canvasH) * 0.96);
+  mapView.scale = scale;
+  mapView.tx = (vw - canvasW * scale) / 2;
+  mapView.ty = (vh - canvasH * scale) / 2;
+  applyMapTransform();
+}
+function getCurrentMapWorldCoord() {
+  if (state.onLine) {
+    const line = LINES.find((l) => l.key === state.onLine.lineKey);
+    const tile = line ? getLineTiles(line)[state.onLine.tileIdx] : null;
+    if (tile) return tile.coord;
+  }
+  return getCity(state.currentCity).coord;
+}
+function mapGotoCurrent() {
+  const viewport = document.getElementById("mapViewport");
+  if (!viewport) return;
+  const vw = viewport.clientWidth, vh = viewport.clientHeight;
+  const pos = getCurrentMapWorldCoord();
+  const target = mapWorldToCanvasPx(pos.x, pos.y);
+  const scale = clampMapScale(2.2);
+  mapView.scale = scale;
+  mapView.tx = vw / 2 - target.x * scale;
+  mapView.ty = vh / 2 - target.y * scale;
+  applyMapTransform();
+}
+function wireMapGestures() {
+  const viewport = document.getElementById("mapViewport");
+  if (!viewport) return;
+  mapPointers = new Map();
+  mapDragLast = null;
+  mapPinchStartDist = null;
+  viewport.addEventListener("pointerdown", (e) => {
+    try {
+      viewport.setPointerCapture(e.pointerId);
+    } catch (err) {
+      // 一部の環境（テスト用の合成イベント等）ではキャプチャが失敗することがあるが、
+      // ポインター追跡自体は継続できるので無視してよい
+    }
+    mapPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (mapPointers.size === 1) {
+      mapDragLast = { x: e.clientX, y: e.clientY };
+    } else if (mapPointers.size === 2) {
+      const pts = [...mapPointers.values()];
+      mapPinchStartDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+      mapPinchStartScale = mapView.scale;
+    }
+  });
+  viewport.addEventListener("pointermove", (e) => {
+    if (!mapPointers.has(e.pointerId)) return;
+    mapPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (mapPointers.size === 1 && mapDragLast) {
+      const dx = e.clientX - mapDragLast.x;
+      const dy = e.clientY - mapDragLast.y;
+      mapView.tx += dx;
+      mapView.ty += dy;
+      mapDragLast = { x: e.clientX, y: e.clientY };
+      applyMapTransform();
+    } else if (mapPointers.size === 2 && mapPinchStartDist) {
+      const pts = [...mapPointers.values()];
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+      mapView.scale = clampMapScale(mapPinchStartScale * (dist / mapPinchStartDist));
+      applyMapTransform();
+    }
+  });
+  const endPointer = (e) => {
+    mapPointers.delete(e.pointerId);
+    if (mapPointers.size < 2) mapPinchStartDist = null;
+    if (mapPointers.size === 0) mapDragLast = null;
+    else {
+      const [only] = [...mapPointers.values()];
+      mapDragLast = only;
+    }
+  };
+  viewport.addEventListener("pointerup", endPointer);
+  viewport.addEventListener("pointercancel", endPointer);
+  viewport.addEventListener("pointerleave", endPointer);
 }
 
 // ---- 都市の地図上の状態（色分け）判定。マップ全体・SVGどちらからも使う ----
@@ -1399,7 +1513,9 @@ const MAP_STATE_COLOR = {
   landmark: "#4cc9f0",
   monopoly: "#52c98a",
 };
-const MODE_COLOR = { rail: "#4cc9f0", highway: "#ffb703", flight: "#c98bf5" };
+// すごろく盤としての統一路線カラー（鉄道／高速道路を厳密に描き分けない）。特殊区間だけ目立たせる。
+const PATH_COLOR = "#d9c08a";
+const SPECIAL_PATH_COLOR = "#ffb703";
 const SPECIAL_ICON = { tunnel: "🚇", bridge: "🌉", strait: "🌊", flight: "✈️" };
 
 // ---- 座標リストをなめらかな閉じた海岸線（カトマル・ロム曲線）に変換する ----
@@ -1420,6 +1536,12 @@ function smoothClosedPath(points) {
 }
 
 const MAP_VIEWBOX = { minX: -20, minY: -45, w: 300, h: 500 };
+const MAP_PX_PER_UNIT = 1.4; // ズーム用キャンバスの基準サイズ（world単位 → CSSピクセル）
+
+// 分岐点（複数の路線が交わる都市）かどうか。すごろく盤では「分岐マス」として区別して描く。
+function isJunctionCity(cityKey) {
+  return getNeighbors(cityKey).length > 2;
+}
 
 function buildMapSvg() {
   const { minX, minY, w: W, h: H } = MAP_VIEWBOX;
@@ -1427,48 +1549,55 @@ function buildMapSvg() {
     .map(([key, pts]) => `<path d="${smoothClosedPath(pts)}" fill="#284a68" stroke="#3a688f" stroke-width="1" opacity="0.9" />`)
     .join("");
 
-  const tileDotsHtml = LINES.map((line) => {
+  // 道（路線）は「鉄道／高速道路」を厳密に描き分けず、1本のすごろく街道として統一表現する。
+  // 特殊区間（海峡・橋・トンネル・空路）だけ色とアイコンで目立たせる。
+  const linesHtml = LINES.map((line) => {
+    const color = line.special ? SPECIAL_PATH_COLOR : PATH_COLOR;
+    const width = line.special ? 2.6 : 1.8;
+    const pts = line.cities.map((ck) => getCity(ck).coord);
+    const pointsAttr = pts.map((p) => `${p.x},${p.y}`).join(" ");
+    return `<polyline points="${pointsAttr}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" opacity="0.75" />`;
+  }).join("");
+
+  // マス目：通常マス（小さい丸）／イベントマス（星）／特殊マス（アイコン）。都市マスは別レイヤーで描く。
+  const tileMarksHtml = LINES.map((line) => {
     const tiles = getLineTiles(line);
     return tiles
       .filter((t) => t.type !== "city")
       .map((t) => {
-        if (t.type === "special") return `<text x="${t.coord.x}" y="${t.coord.y + 2.5}" font-size="8" text-anchor="middle">${SPECIAL_ICON[line.special] || "★"}</text>`;
-        if (t.type === "event") return `<circle cx="${t.coord.x}" cy="${t.coord.y}" r="1.8" fill="#ffd166" stroke="#0f2540" stroke-width="0.5" />`;
-        return `<circle cx="${t.coord.x}" cy="${t.coord.y}" r="1" fill="#7d93a8" />`;
+        if (t.type === "special") {
+          return `<g><circle cx="${t.coord.x}" cy="${t.coord.y}" r="4.2" fill="#3a2c14" stroke="${SPECIAL_PATH_COLOR}" stroke-width="1" /><text x="${t.coord.x}" y="${t.coord.y + 2.6}" font-size="6.5" text-anchor="middle">${SPECIAL_ICON[line.special] || "★"}</text></g>`;
+        }
+        if (t.type === "event") {
+          return `<path transform="translate(${t.coord.x},${t.coord.y})" d="M0,-3.2 L1,-1 L3.2,-1 L1.4,0.5 L2,2.8 L0,1.4 L-2,2.8 L-1.4,0.5 L-3.2,-1 L-1,-1 Z" fill="#ffd166" stroke="#7a5200" stroke-width="0.5" />`;
+        }
+        return `<circle cx="${t.coord.x}" cy="${t.coord.y}" r="1.6" fill="#e8eef5" opacity="0.55" />`;
       })
       .join("");
-  }).join("");
-
-  const linesHtml = LINES.map((line) => {
-    const modes = Array.isArray(line.mode) ? line.mode : [line.mode];
-    const color = MODE_COLOR[modes[0]] || MODE_COLOR.rail;
-    const dash = modes[0] === "highway" ? "5,4" : modes[0] === "flight" ? "2,4" : "none";
-    const width = line.special ? 3 : 1.6;
-    const pts = line.cities.map((ck) => getCity(ck).coord);
-    const pointsAttr = pts.map((p) => `${p.x},${p.y}`).join(" ");
-    const mx = pts[Math.floor(pts.length / 2)].x;
-    const my = pts[Math.floor(pts.length / 2)].y;
-    const nameLabel = `<text x="${mx}" y="${my - 4}" font-size="5.5" text-anchor="middle" fill="${color}" opacity="0.9" paint-order="stroke" stroke="#0f2540" stroke-width="2">${line.name}</text>`;
-    return `<polyline points="${pointsAttr}" fill="none" stroke="${color}" stroke-width="${width}" stroke-dasharray="${dash}" stroke-linecap="round" stroke-linejoin="round" opacity="0.85" />${nameLabel}`;
   }).join("");
 
   const gapY = 400;
   const gapHtml = `<line x1="${minX}" y1="${gapY}" x2="${minX + W}" y2="${gapY}" stroke="#4cc9f0" stroke-width="1" stroke-dasharray="3,4" opacity="0.4" />
     <text x="${minX + W / 2}" y="${gapY + 12}" font-size="8.5" text-anchor="middle" fill="#a9bdd4">🌊 海（沖縄へは飛行機のみで移動）</text>`;
 
+  // 都市マス：分岐点は角丸四角、それ以外は丸。現在地は大きく光らせる。
   const labelCities = CITIES.filter((c) => c.size === "metro" || c.size === "hub" || c.key === state.currentCity);
   const dotsHtml = CITIES.map((city) => {
     const st = getCityMapState(city);
     const color = MAP_STATE_COLOR[st.stateClass];
     const isPlayerHere = st.isCurrent && !state.onLine;
-    const r = isPlayerHere ? 6.5 : city.size === "metro" ? 4.5 : city.size === "hub" ? 3.6 : 2.8;
+    const junction = isJunctionCity(city.key);
+    const r = isPlayerHere ? 7 : city.size === "metro" ? 5 : city.size === "hub" ? 4.2 : 3.4;
     const ring = isPlayerHere ? `<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r + 3}" fill="none" stroke="#ffb703" stroke-width="1.6"><animate attributeName="r" values="${r + 3};${r + 5};${r + 3}" dur="1.6s" repeatCount="indefinite" /></circle>` : "";
     const badge = st.isMonopoly ? "👑" : st.hasLandmark ? "🏙️" : st.remain === 1 && st.ownedCount > 0 ? "🔥" : "";
     const showLabel = labelCities.includes(city);
     const label = showLabel
       ? `<text x="${city.coord.x}" y="${city.coord.y - r - 3}" font-size="${isPlayerHere ? 9 : 7}" text-anchor="middle" fill="${isPlayerHere ? "#ffb703" : "#e8eef5"}" font-weight="${isPlayerHere ? "bold" : "normal"}" paint-order="stroke" stroke="#0f2540" stroke-width="2.5">${city.name}${badge}</text>`
       : "";
-    return `<g>${ring}<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r}" fill="${color}" stroke="#0f2540" stroke-width="1"><title>${city.name}${badge}</title></circle>${label}</g>`;
+    const shape = junction
+      ? `<rect x="${city.coord.x - r}" y="${city.coord.y - r}" width="${r * 2}" height="${r * 2}" rx="2.5" fill="${color}" stroke="#0f2540" stroke-width="1.2" transform="rotate(45 ${city.coord.x} ${city.coord.y})" />`
+      : `<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r}" fill="${color}" stroke="#0f2540" stroke-width="1" />`;
+    return `<g>${ring}${shape}<title>${city.name}${badge}${junction ? "（分岐点）" : ""}</title>${label}</g>`;
   }).join("");
 
   let playerOnLineHtml = "";
@@ -1484,10 +1613,12 @@ function buildMapSvg() {
     }
   }
 
-  return `<svg viewBox="${minX} ${minY} ${W} ${H}" class="japan-map-svg" xmlns="http://www.w3.org/2000/svg">
+  const canvasW = Math.round(W * MAP_PX_PER_UNIT);
+  const canvasH = Math.round(H * MAP_PX_PER_UNIT);
+  return `<svg viewBox="${minX} ${minY} ${W} ${H}" width="${canvasW}" height="${canvasH}" class="japan-map-svg" xmlns="http://www.w3.org/2000/svg">
     ${silhouettes}
     ${linesHtml}
-    ${tileDotsHtml}
+    ${tileMarksHtml}
     ${gapHtml}
     ${dotsHtml}
     ${playerOnLineHtml}
@@ -1513,8 +1644,23 @@ function buildMapHtml() {
     </div>`;
   }).join("");
 
-  return `<div class="modal-title">🗺️ 全国マップ</div>
-    <div class="map-svg-wrap">${buildMapSvg()}</div>
+  return `<div class="modal-title">🗺️ 全国すごろくマップ</div>
+    <div class="map-viewport" id="mapViewport">
+      <div class="map-canvas" id="mapCanvas">${buildMapSvg()}</div>
+    </div>
+    <div class="map-zoom-controls">
+      <button class="map-zoom-btn" data-action="map-zoom-out">－</button>
+      <button class="map-zoom-btn" data-action="map-zoom-in">＋</button>
+      <button class="map-zoom-btn wide" data-action="map-fit">🗾 全体表示</button>
+      <button class="map-zoom-btn wide" data-action="map-goto-current">📍現在地へ</button>
+    </div>
+    <div class="map-tile-legend">
+      <span class="tile-legend-item"><span class="tile-swatch tile-swatch-city"></span>街（都市）</span>
+      <span class="tile-legend-item"><span class="tile-swatch tile-swatch-junction"></span>分岐点</span>
+      <span class="tile-legend-item"><span class="tile-swatch tile-swatch-blank"></span>通常マス</span>
+      <span class="tile-legend-item"><span class="tile-swatch tile-swatch-event"></span>イベントマス</span>
+      <span class="tile-legend-item"><span class="tile-swatch tile-swatch-special"></span>特殊区間</span>
+    </div>
     <div class="map-legend">
       <span class="map-chip current">📍現在地</span>
       <span class="map-chip unvisited">未訪問</span>
@@ -1523,7 +1669,7 @@ function buildMapHtml() {
       <span class="map-chip landmark">🏙️ランドマーク解禁</span>
       <span class="map-chip monopoly">👑完全制覇</span>
     </div>
-    <div class="modal-sub">🚄鉄道（水色線）／🛣️高速道路（オレンジ点線）／✈️空路（紫の点線）。橋・トンネル・海峡は太線＋アイコンつき。マス目の黄色い点はイベントマス。路線名は地図上に直接表示されています。</div>
+    <div class="modal-sub">指2本でつまんで拡大・縮小、指1本でドラッグして移動できます。ボタンでも操作できます。</div>
     ${regionsHtml}
     <button class="modal-close-btn primary" data-action="close-modal">とじる</button>`;
 }
@@ -1987,6 +2133,26 @@ function wireEvents() {
     const tutorialBtn = e.target.closest('[data-action="show-tutorial"]');
     if (tutorialBtn) {
       showTutorialModal(null);
+      return;
+    }
+    const mapZoomInBtn = e.target.closest('[data-action="map-zoom-in"]');
+    if (mapZoomInBtn) {
+      mapZoom(1.35);
+      return;
+    }
+    const mapZoomOutBtn = e.target.closest('[data-action="map-zoom-out"]');
+    if (mapZoomOutBtn) {
+      mapZoom(1 / 1.35);
+      return;
+    }
+    const mapFitBtn = e.target.closest('[data-action="map-fit"]');
+    if (mapFitBtn) {
+      mapFitAll();
+      return;
+    }
+    const mapGotoBtn = e.target.closest('[data-action="map-goto-current"]');
+    if (mapGotoBtn) {
+      mapGotoCurrent();
       return;
     }
     const closeBtn = e.target.closest('[data-action="close-modal"]');
