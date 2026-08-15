@@ -1,42 +1,55 @@
 /* ============================================================
-   にっぽん物件王 - ゲームロジック
+   トリリオネアを目指せ！ - ゲームロジック
+   データ（都市・路線・クイズ）は data.js 側にすべて分離してある。
+   ここでは「動かし方」だけを扱う。
    ============================================================ */
 
-const CITY_SPACING = 6; // 都市と都市の間のマス数
-const START_CASH = 2500;
+const START_CASH = 3000; // 万円
+const GOAL_REVENUE = 100000000; // 万円 = 1兆円
+const MILESTONES = [
+  { value: 1000000, label: "年間収益100億円" },
+  { value: 10000000, label: "年間収益1000億円" },
+];
+const DICE_FACES = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
 
 // ---- DOM 参照 ----
 let startScreen, gameScreen, startBtn;
-let statusBar, statLocation, statCash, statAssets, statProps, statMonopoly, statDistance, goalBarFill;
-let overviewBtn, boardStrip, messageLog, incomeFloat, diceFace, diceBtn;
+let statYear, statMonth, victoryBadge, statAnnualRevenue, goalBarFill;
+let statCash, statAssets, statProps, statMonopoly;
+let cityIcon, cityName, cityCatch, miniMap;
+let diceFace, directionButtons;
+let shopBtn, logBtn, mapBtn;
 let modalRoot, modalBox;
 
 // ---- ゲーム状態 ----
 let state = {
-  board: [],
-  pos: 0,
+  currentCity: "tokyo",
+  year: 1,
+  month: 1,
   cash: START_CASH,
-  cumulativeIncome: 0,
-  quizCorrect: 0,
-  quizAskedCount: 0,
   owned: new Set(),
   monopolyCities: new Set(),
+  cityQuizCorrect: {},
+  quizCorrectTotal: 0,
+  quizAskedTotal: 0,
   discountCoupons: 0,
-  skipNextTurn: false,
-  extraTurnPending: false,
-  forceCityCheck: false,
-  gameOver: false,
-  quizPool: [],
-  quizPoolPtr: 0,
-  visitedCityKeys: new Set(),
+  incomeBoost: { multiplier: 1, turnsLeft: 0 },
+  milestonesHit: new Set(),
+  victoryAchieved: false,
+  firstPurchaseDone: false,
+  quizRecent: [],
+  logHistory: [],
+  busy: false,
 };
 
 let pendingAfterClose = null;
 let quizOnDone = null;
+let quizCityKey = null;
 let currentQuizData = null;
 let currentQuizOptions = [];
 let currentQuizAnswered = false;
-let incomeFloatTimer = null;
+let activeCityKey = null;
+let shopCloseCallback = null;
 
 // ============================================================
 // ユーティリティ
@@ -55,26 +68,24 @@ function shuffle(arr) {
   }
   return a;
 }
-function fmt(n) {
-  return Math.round(n).toLocaleString("ja-JP");
-}
 function delay(ms) {
   return new Promise((res) => setTimeout(res, ms));
 }
 function propKey(cityKey, idx) {
   return cityKey + "#" + idx;
 }
-function lastIndex() {
-  return state.board.length - 1;
+function getCity(cityKey) {
+  return CITIES.find((c) => c.key === cityKey);
 }
-function weightedPick(pairs) {
-  const total = pairs.reduce((s, p) => s + p[1], 0);
-  let r = Math.random() * total;
-  for (const [key, w] of pairs) {
-    if (r < w) return key;
-    r -= w;
-  }
-  return pairs[pairs.length - 1][0];
+function trimNum(n) {
+  const rounded = Math.round(n * 100) / 100;
+  return rounded.toLocaleString("ja-JP", { maximumFractionDigits: 2 });
+}
+function fmtMoney(manEn) {
+  const v = Math.round(manEn);
+  if (v >= 1e8) return trimNum(v / 1e8) + "兆円";
+  if (v >= 10000) return trimNum(v / 10000) + "億円";
+  return v.toLocaleString("ja-JP") + "万円";
 }
 function getTotalPropertyCount() {
   return CITIES.reduce((s, c) => s + c.properties.length, 0);
@@ -88,135 +99,167 @@ function getOwnedPropertyValueSum() {
   });
   return sum;
 }
-
-// ============================================================
-// 盤面生成
-// ============================================================
-function buildBoard() {
-  const weights = [
-    ["quiz", 30],
-    ["money_plus", 20],
-    ["money_minus", 15],
-    ["card", 25],
-    ["blank", 10],
-  ];
-  const cells = [];
-  for (let i = 0; i < CITIES.length; i++) {
-    if (i > 0) {
-      for (let f = 0; f < CITY_SPACING - 1; f++) {
-        cells.push({ type: weightedPick(weights) });
+function getBaseAnnualRevenue() {
+  let total = 0;
+  CITIES.forEach((city) => {
+    let cityRev = 0;
+    let ownedCount = 0;
+    city.properties.forEach((p, i) => {
+      if (state.owned.has(propKey(city.key, i))) {
+        cityRev += p.revenue;
+        ownedCount++;
       }
-    }
-    cells.push({ type: "city", cityIdx: i });
-  }
-  state.board = cells;
+    });
+    if (ownedCount === city.properties.length && ownedCount > 0) cityRev *= 2;
+    total += cityRev;
+  });
+  return total;
+}
+function addLog(text, cls) {
+  state.logHistory.push({ text, cls, when: `${state.year}年${state.month}月` });
+  if (state.logHistory.length > 300) state.logHistory.shift();
 }
 
-function advanceWithCityStop(fromPos, steps) {
-  let target = fromPos;
-  for (let s = 1; s <= steps; s++) {
-    const cand = fromPos + s;
-    if (cand >= lastIndex()) {
-      target = lastIndex();
-      break;
+// ============================================================
+// 路線・移動
+// ============================================================
+function getNeighbors(cityKey) {
+  const result = [];
+  const seen = new Set();
+  LINES.forEach((line) => {
+    const idx = line.cities.indexOf(cityKey);
+    if (idx < 0) return;
+    if (idx > 0) {
+      const n = line.cities[idx - 1];
+      if (!seen.has(n)) {
+        seen.add(n);
+        result.push({ cityKey: n, lineKey: line.key, dir: -1 });
+      }
     }
-    target = cand;
-    if (state.board[cand].type === "city") break;
+    if (idx < line.cities.length - 1) {
+      const n = line.cities[idx + 1];
+      if (!seen.has(n)) {
+        seen.add(n);
+        result.push({ cityKey: n, lineKey: line.key, dir: 1 });
+      }
+    }
+  });
+  return result;
+}
+
+async function movePlayerAlongLine(neighbor, steps) {
+  const line = LINES.find((l) => l.key === neighbor.lineKey);
+  const fromIdx = line.cities.indexOf(state.currentCity);
+  const targetIdx = Math.min(line.cities.length - 1, Math.max(0, fromIdx + neighbor.dir * steps));
+  let cur = fromIdx;
+  while (cur !== targetIdx) {
+    cur += neighbor.dir;
+    state.currentCity = line.cities[cur];
+    renderCityDisplayOnly();
+    await delay(200);
   }
-  return target;
+  advanceMonth();
+  handleCityArrival(state.currentCity);
+}
+
+function rollDiceThenMove(neighbor) {
+  diceFace.classList.add("rolling");
+  let cycles = 0;
+  const spin = setInterval(() => {
+    diceFace.textContent = DICE_FACES[randInt(0, 5)];
+    cycles++;
+    if (cycles > 7) {
+      clearInterval(spin);
+      diceFace.classList.remove("rolling");
+      const value = randInt(1, 6);
+      diceFace.textContent = DICE_FACES[value - 1];
+      addLog(`🎲 ${value}が出た！${getCity(neighbor.cityKey).name}方面へ進んだ。`);
+      movePlayerAlongLine(neighbor, value);
+    }
+  }, 70);
+}
+
+// ============================================================
+// 経済（月次収益・年月進行）
+// ============================================================
+function advanceMonth() {
+  const annual = getBaseAnnualRevenue();
+  const boostActive = state.incomeBoost.turnsLeft > 0;
+  const boostMult = boostActive ? state.incomeBoost.multiplier : 1;
+  const monthly = Math.round((annual / 12) * boostMult);
+  if (monthly > 0) {
+    state.cash += monthly;
+    addLog(`📅 ${state.year}年${state.month}月の収益: +${fmtMoney(monthly)}${boostActive ? "（ブースト中）" : ""}`, "good");
+  }
+  state.month++;
+  if (state.month > 12) {
+    state.month = 1;
+    state.year++;
+  }
+  if (state.incomeBoost.turnsLeft > 0) {
+    state.incomeBoost.turnsLeft--;
+    if (state.incomeBoost.turnsLeft === 0) state.incomeBoost.multiplier = 1;
+  }
+  renderHeader();
 }
 
 // ============================================================
 // 描画
 // ============================================================
-function getLocationLabel() {
-  const cell = state.board[state.pos];
-  if (cell.type === "city") return CITIES[cell.cityIdx].name;
-  let prevCity = null,
-    nextCity = null;
-  for (let i = state.pos - 1; i >= 0; i--) {
-    if (state.board[i].type === "city") {
-      prevCity = CITIES[state.board[i].cityIdx].name;
-      break;
-    }
-  }
-  for (let i = state.pos + 1; i < state.board.length; i++) {
-    if (state.board[i].type === "city") {
-      nextCity = CITIES[state.board[i].cityIdx].name;
-      break;
-    }
-  }
-  return `${prevCity || ""}→${nextCity || ""} 移動中`;
-}
-
 function renderHeader() {
-  const distance = lastIndex() - state.pos;
-  const propertyValueSum = getOwnedPropertyValueSum();
-  const totalAssets = state.cash + propertyValueSum;
-  statCash.textContent = fmt(state.cash);
-  statAssets.textContent = fmt(totalAssets);
-  statProps.textContent = state.owned.size;
-  statMonopoly.textContent = state.monopolyCities.size;
-  statDistance.textContent = state.pos >= lastIndex() ? "ゴール！" : `${distance}マス`;
-  goalBarFill.style.width = Math.min(100, (state.pos / lastIndex()) * 100) + "%";
-  statLocation.textContent = getLocationLabel();
+  statYear.textContent = state.year;
+  statMonth.textContent = state.month;
+  const annual = getBaseAnnualRevenue();
+  statAnnualRevenue.textContent = fmtMoney(annual);
+  goalBarFill.style.width = Math.min(100, (annual / GOAL_REVENUE) * 100) + "%";
+  statCash.textContent = fmtMoney(state.cash);
+  statAssets.textContent = fmtMoney(state.cash + getOwnedPropertyValueSum());
+  statProps.textContent = `${state.owned.size}/${getTotalPropertyCount()}`;
+  statMonopoly.textContent = `${state.monopolyCities.size}/${CITIES.length}`;
+  victoryBadge.classList.toggle("hidden", !state.victoryAchieved);
 }
 
-const CELL_TYPE_ICON = { quiz: "❓", money_plus: "💰", money_minus: "💸", card: "🎴", blank: "・" };
-
-function renderBoardStripDOM() {
-  boardStrip.innerHTML = "";
-  state.board.forEach((cell, idx) => {
-    const div = document.createElement("div");
-    div.className = "cell" + (cell.type === "city" ? " city" : "");
-    div.dataset.index = idx;
-    div.textContent = cell.type === "city" ? CITIES[cell.cityIdx].icon : CELL_TYPE_ICON[cell.type];
-    boardStrip.appendChild(div);
-  });
-  renderBoardMarker();
+function renderMiniMap() {
+  const line = LINES[0];
+  miniMap.innerHTML = line.cities
+    .map((key) => {
+      const c = getCity(key);
+      const ownedCount = c.properties.filter((_, i) => state.owned.has(propKey(key, i))).length;
+      const isMonopoly = state.monopolyCities.has(key);
+      const isCurrent = key === state.currentCity;
+      return `<div class="map-node ${isCurrent ? "current" : ""} ${ownedCount > 0 ? "owned" : ""} ${isMonopoly ? "monopoly" : ""}">
+        <div class="node-line"></div>
+        <div class="node-icon">${c.icon}</div>
+        ${isMonopoly ? '<span class="node-crown">👑</span>' : ""}
+        <div class="node-name">${c.name}</div>
+      </div>`;
+    })
+    .join("");
 }
 
-function renderBoardMarker() {
-  const cellEls = boardStrip.querySelectorAll(".cell");
-  cellEls.forEach((el) => {
-    const idx = Number(el.dataset.index);
-    el.classList.toggle("visited", idx < state.pos);
-    const marker = el.querySelector(".player-marker");
-    if (marker) marker.remove();
-    const cell = state.board[idx];
-    if (cell.type === "city") {
-      const city = CITIES[cell.cityIdx];
-      const ownedCount = city.properties.filter((_, i) => state.owned.has(propKey(city.key, i))).length;
-      el.classList.toggle("owned-city", ownedCount > 0 && ownedCount < city.properties.length);
-      el.classList.toggle("monopoly-city", state.monopolyCities.has(city.key));
-    }
-  });
-  const curEl = boardStrip.querySelector(`.cell[data-index="${state.pos}"]`);
-  if (curEl) {
-    const marker = document.createElement("span");
-    marker.className = "player-marker";
-    marker.textContent = "🚗";
-    curEl.appendChild(marker);
-    curEl.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
-  }
+function renderDirectionButtons() {
+  const neighbors = getNeighbors(state.currentCity);
+  directionButtons.innerHTML = neighbors
+    .map((n) => {
+      const c = getCity(n.cityKey);
+      return `<button class="dir-btn ${neighbors.length === 1 ? "solo" : ""}" data-city-key="${n.cityKey}" data-line-key="${n.lineKey}" data-dir="${n.dir}">
+        <span class="dir-icon">${c.icon}</span>${c.name}方面へ 🎲
+      </button>`;
+    })
+    .join("");
 }
 
-function log(text, cls) {
-  const div = document.createElement("div");
-  div.className = "log-line" + (cls ? ` log-${cls}` : "");
-  div.textContent = text;
-  messageLog.appendChild(div);
-  messageLog.scrollTop = messageLog.scrollHeight;
-  while (messageLog.children.length > 50) messageLog.removeChild(messageLog.firstChild);
+function renderCityDisplayOnly() {
+  const city = getCity(state.currentCity);
+  cityIcon.textContent = city.icon;
+  cityName.textContent = city.name;
+  cityCatch.textContent = city.catch;
+  renderMiniMap();
 }
 
-function showIncomeFloat(amount) {
-  incomeFloat.classList.add("hidden");
-  incomeFloat.textContent = `📈 収益 +${fmt(amount)}万円`;
-  void incomeFloat.offsetWidth;
-  incomeFloat.classList.remove("hidden");
-  clearTimeout(incomeFloatTimer);
-  incomeFloatTimer = setTimeout(() => incomeFloat.classList.add("hidden"), 1400);
+function renderCityPanel() {
+  renderCityDisplayOnly();
+  renderDirectionButtons();
 }
 
 // ============================================================
@@ -237,158 +280,87 @@ function closeModal() {
   if (cb) cb();
 }
 function setControlsEnabled(enabled) {
-  diceBtn.disabled = !enabled;
-  overviewBtn.disabled = !enabled;
+  document.querySelectorAll(".dir-btn").forEach((b) => (b.disabled = !enabled));
+  shopBtn.disabled = !enabled;
+  logBtn.disabled = !enabled;
+  mapBtn.disabled = !enabled;
+  state.busy = !enabled;
 }
 
 // ============================================================
-// ターン進行の中心フロー
+// ターン進行
 // ============================================================
-function afterEventResolved() {
-  if (state.forceCityCheck) {
-    state.forceCityCheck = false;
-    const cell = state.board[state.pos];
-    handleCityArrival(cell.cityIdx);
-    return;
-  }
-  if (state.pos >= lastIndex()) {
-    showResult();
-    return;
-  }
-  if (state.extraTurnPending) {
-    state.extraTurnPending = false;
-    log("🎁 もう一度サイコロをふれる！", "highlight");
-    setTimeout(() => rollDice(), 500);
-    return;
-  }
+function afterTurnComplete() {
+  renderCityPanel();
   setControlsEnabled(true);
 }
 
-function tickTurnIncome() {
-  let total = 0;
-  CITIES.forEach((city) => {
-    let cityIncome = 0;
-    let ownedCount = 0;
-    city.properties.forEach((p, i) => {
-      if (state.owned.has(propKey(city.key, i))) {
-        cityIncome += p.revenue;
-        ownedCount++;
-      }
-    });
-    if (ownedCount === city.properties.length && ownedCount > 0) cityIncome *= 2;
-    total += cityIncome;
-  });
-  if (total > 0) {
-    state.cash += total;
-    state.cumulativeIncome += total;
-    renderHeader();
-    showIncomeFloat(total);
-  }
-}
-
-async function movePlayer(steps) {
-  const from = state.pos;
-  const target = advanceWithCityStop(from, steps);
-  let cur = from;
-  while (cur < target) {
-    cur++;
-    state.pos = cur;
-    renderBoardMarker();
-    renderHeader();
-    await delay(150);
-  }
-  tickTurnIncome();
-  resolveCellEvent(target);
-}
-
-function resolveCellEvent(pos) {
-  const cell = state.board[pos];
-  if (cell.type === "city") handleCityArrival(cell.cityIdx);
-  else if (cell.type === "quiz") handleQuizCell();
-  else if (cell.type === "money_plus") handleMoneyEvent(true);
-  else if (cell.type === "money_minus") handleMoneyEvent(false);
-  else if (cell.type === "card") handleCardCell();
-  else handleBlankCell();
-}
-
-// ============================================================
-// サイコロ
-// ============================================================
-const DICE_FACES = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
-
-function rollDice() {
-  if (state.gameOver) return;
-  if (state.skipNextTurn) {
-    state.skipNextTurn = false;
-    setControlsEnabled(false);
-    diceFace.textContent = "😴";
-    log("😴 今回はお休み…（スキップ）", "bad");
-    setTimeout(() => setControlsEnabled(true), 700);
-    return;
-  }
-  setControlsEnabled(false);
-  diceFace.classList.add("rolling");
-  let cycles = 0;
-  const spin = setInterval(() => {
-    diceFace.textContent = DICE_FACES[randInt(0, 5)];
-    cycles++;
-    if (cycles > 7) {
-      clearInterval(spin);
-      finishRoll();
-    }
-  }, 70);
-}
-
-function finishRoll() {
-  diceFace.classList.remove("rolling");
-  const value = randInt(1, 6);
-  diceFace.textContent = DICE_FACES[value - 1];
-  log(`🎲 ${value}が出た！`);
-  movePlayer(value);
+function handleCityArrival(cityKey) {
+  state.currentCity = cityKey;
+  renderCityDisplayOnly();
+  renderHeader();
+  showQuizModal(cityKey, () => openCityShop(cityKey));
 }
 
 // ============================================================
 // クイズ
 // ============================================================
-function getNextQuiz() {
-  if (state.quizPoolPtr >= state.quizPool.length) {
-    state.quizPool = shuffle(QUIZ_BANK.map((_, i) => i));
-    state.quizPoolPtr = 0;
-  }
-  const idx = state.quizPool[state.quizPoolPtr++];
-  return QUIZ_BANK[idx];
+function pickQuiz(cityKey) {
+  const tagged = QUIZ_BANK.filter((q) => q.tags && q.tags.includes(cityKey));
+  const pool = tagged.length && Math.random() < 0.7 ? tagged : QUIZ_BANK;
+  let available = pool.filter((q) => !state.quizRecent.includes(QUIZ_BANK.indexOf(q)));
+  if (!available.length) available = pool;
+  const q = pick(available);
+  const idx = QUIZ_BANK.indexOf(q);
+  state.quizRecent.push(idx);
+  if (state.quizRecent.length > 12) state.quizRecent.shift();
+  return q;
+}
+
+function getUnlockHint(cityKey) {
+  const city = getCity(cityKey);
+  const have = state.cityQuizCorrect[cityKey] || 0;
+  let best = null;
+  city.properties.forEach((p, i) => {
+    if (p.unlock && !state.owned.has(propKey(cityKey, i))) {
+      const remain = p.unlock - have;
+      if (remain > 0 && (!best || remain < best.remain)) best = { prop: p, remain };
+    }
+  });
+  return best;
 }
 
 function applyQuizReward() {
   const roll = Math.random();
   if (roll < 0.4) {
-    const amt = Math.round(randInt(100, 300) / 10) * 10;
+    const amt = Math.max(300, Math.round((state.cash * 0.15) / 10) * 10);
     state.cash += amt;
-    return `💰 購入資金 +${amt}万円 ゲット！`;
+    return `💰 現金 +${fmtMoney(amt)} ゲット！`;
   } else if (roll < 0.7) {
     state.discountCoupons++;
     return `🎟️ 次に買う物件が3割引になるクーポンをゲット！`;
   } else {
-    const amt = Math.round(randInt(80, 200) / 10) * 10;
-    state.cash += amt;
-    state.cumulativeIncome += amt;
-    return `📈 収益ボーナス +${amt}万円 ゲット！`;
+    state.incomeBoost = { multiplier: 1.5, turnsLeft: 3 };
+    return `📈 3か月間、収益が1.5倍になるブーストを獲得！`;
   }
 }
 
-function showQuizModal(onDone) {
+function showQuizModal(cityKey, onDone) {
   quizOnDone = onDone;
-  const q = getNextQuiz();
+  quizCityKey = cityKey;
+  const q = pickQuiz(cityKey);
   currentQuizData = q;
   currentQuizAnswered = false;
   currentQuizOptions = shuffle(q.options.map((text, i) => ({ text, isCorrect: i === q.correct })));
-  state.quizAskedCount++;
+  state.quizAskedTotal++;
+  const hint = getUnlockHint(cityKey);
+  const hintHtml = hint ? `<div class="hint-banner">🔓 あと${hint.remain}問正解で「${hint.prop.name}」がアンロック！</div>` : "";
   const optsHtml = currentQuizOptions
     .map((o, i) => `<button class="quiz-opt" data-action="quiz-opt" data-idx="${i}">${o.text}</button>`)
     .join("");
   setModalContent(`
-    <div class="modal-title">❓ 社会科クイズ</div>
-    <div class="modal-sub">正解すると物件購入に役立つごほうびがもらえるよ！</div>
+    <div class="modal-title">❓ クイズ！</div>
+    ${hintHtml}
     <p style="font-size:15px;font-weight:bold;line-height:1.6;">${q.q}</p>
     <div class="quiz-options" id="quizOptionsBox">${optsHtml}</div>
   `);
@@ -399,10 +371,18 @@ function onQuizOptionClick(idx) {
   currentQuizAnswered = true;
   const chosen = currentQuizOptions[idx];
   let rewardHtml = "";
+  let unlockHtml = "";
   if (chosen.isCorrect) {
-    state.quizCorrect++;
+    state.quizCorrectTotal++;
+    state.cityQuizCorrect[quizCityKey] = (state.cityQuizCorrect[quizCityKey] || 0) + 1;
     const rewardText = applyQuizReward();
     rewardHtml = `<div class="quiz-reward">${rewardText}</div>`;
+    const city = getCity(quizCityKey);
+    const have = state.cityQuizCorrect[quizCityKey];
+    const justUnlocked = city.properties.filter((p, i) => p.unlock === have && !state.owned.has(propKey(quizCityKey, i)));
+    if (justUnlocked.length) {
+      unlockHtml = `<div class="quiz-unlock-note">🔓 「${justUnlocked.map((p) => p.name).join("」「")}」がアンロックされた！</div>`;
+    }
   }
   document.querySelectorAll("#quizOptionsBox .quiz-opt").forEach((btn, i) => {
     btn.disabled = true;
@@ -412,7 +392,7 @@ function onQuizOptionClick(idx) {
   renderHeader();
   const resultBox = document.createElement("div");
   resultBox.className = "quiz-result-box";
-  resultBox.innerHTML = `<strong>${chosen.isCorrect ? "🎉 せいかい！" : "😵 ざんねん…"}</strong><br>${currentQuizData.explain}${rewardHtml}`;
+  resultBox.innerHTML = `<strong>${chosen.isCorrect ? "🎉 せいかい！" : "😵 ざんねん…"}</strong><br>${currentQuizData.explain}${rewardHtml}${unlockHtml}`;
   document.getElementById("quizOptionsBox").insertAdjacentElement("afterend", resultBox);
   const contBtn = document.createElement("button");
   contBtn.className = "modal-close-btn primary";
@@ -422,203 +402,253 @@ function onQuizOptionClick(idx) {
 }
 
 // ============================================================
-// マスイベント: クイズマス / 収入 / 出費 / カード / 何もなし
+// 都市の物件・購入
 // ============================================================
-function handleQuizCell() {
-  log("❓ クイズマスに止まった！");
-  showQuizModal(() => {
-    modalRoot.classList.add("hidden");
-    modalBox.innerHTML = "";
-    afterEventResolved();
-  });
+function openCityShop(cityKey) {
+  activeCityKey = cityKey;
+  shopCloseCallback = afterTurnComplete;
+  renderCityShopContent(cityKey);
+  setAfterClose(shopCloseCallback);
 }
 
-function handleMoneyEvent(isPositive) {
-  const amount = isPositive ? Math.round(randInt(100, 300) / 10) * 10 : Math.round(randInt(50, 200) / 10) * 10;
-  const text = isPositive ? pick(INCOME_TEXTS) : pick(EXPENSE_TEXTS);
-  if (isPositive) state.cash += amount;
-  else state.cash = Math.max(0, state.cash - amount);
-  renderHeader();
-  log(`${isPositive ? "💰" : "💸"} ${text}（${isPositive ? "+" : "-"}${amount}万円）`, isPositive ? "good" : "bad");
-  setModalContent(`
-    <div class="toast-icon">${isPositive ? "💰" : "💸"}</div>
-    <div class="toast-text">${text}</div>
-    <div class="toast-amount ${isPositive ? "good" : "bad"}">${isPositive ? "+" : "-"}${amount}万円</div>
-    <button class="modal-close-btn primary" data-action="close-modal">OK</button>
-  `);
-  setAfterClose(afterEventResolved);
+function showShopStandalone() {
+  if (state.busy) return;
+  activeCityKey = state.currentCity;
+  shopCloseCallback = null;
+  renderCityShopContent(state.currentCity);
+  setAfterClose(null);
 }
 
-function handleCardCell() {
-  const card = pick(CARD_EVENTS);
-  const eff = card.effect;
-  let resultText = "";
-  if (eff.type === "cash") {
-    state.cash = Math.max(0, state.cash + eff.amount);
-    resultText = `${eff.amount > 0 ? "+" : ""}${eff.amount}万円`;
-  } else if (eff.type === "move") {
-    let newPos;
-    if (eff.amount > 0) {
-      newPos = advanceWithCityStop(state.pos, eff.amount);
-    } else {
-      newPos = Math.max(0, state.pos + eff.amount);
-    }
-    state.pos = newPos;
-    renderBoardMarker();
-    if (state.board[newPos].type === "city") state.forceCityCheck = true;
-    resultText = eff.amount > 0 ? `${eff.amount}マス進んだ！` : `${Math.abs(eff.amount)}マス戻った…`;
-  } else if (eff.type === "discount") {
-    state.discountCoupons++;
-    resultText = "次の購入が3割引！";
-  } else if (eff.type === "incomeBonus") {
-    state.cash += eff.amount;
-    state.cumulativeIncome += eff.amount;
-    resultText = `収益+${eff.amount}万円`;
-  } else if (eff.type === "extraTurn") {
-    state.extraTurnPending = true;
-    resultText = "もう一度サイコロをふれる！";
-  } else if (eff.type === "skipNextTurn") {
-    state.skipNextTurn = true;
-    resultText = "次のターンはお休み…";
-  }
-  renderHeader();
-  log(`🎴 ${card.text}`, "highlight");
-  setModalContent(`
-    <div class="toast-icon">🎴</div>
-    <div class="toast-text">${card.text}</div>
-    <div class="toast-amount">${resultText}</div>
-    <button class="modal-close-btn primary" data-action="close-modal">OK</button>
-  `);
-  setAfterClose(afterEventResolved);
-}
-
-function handleBlankCell() {
-  const text = pick(BLANK_TEXTS);
-  log(`🚶 ${text}`);
-  setModalContent(`
-    <div class="toast-icon">🚶</div>
-    <div class="toast-text">${text}</div>
-    <button class="modal-close-btn primary" data-action="close-modal">OK</button>
-  `);
-  setAfterClose(afterEventResolved);
-}
-
-// ============================================================
-// 都市到着・物件購入
-// ============================================================
-function handleCityArrival(cityIdx) {
-  const city = CITIES[cityIdx];
-  state.visitedCityKeys.add(city.key);
-  renderHeader();
-  log(`📍 ${city.name}に到着！${city.catch}`, "highlight");
-  showQuizModal(() => openCityShop(cityIdx));
-}
-
-function openCityShop(cityIdx) {
-  renderCityShopContent(cityIdx);
-  setAfterClose(afterEventResolved);
-}
-
-function renderCityShopContent(cityIdx) {
+function renderCityShopContent(cityKey) {
   modalRoot.classList.remove("hidden");
-  modalBox.innerHTML = buildCityShopHtml(cityIdx);
+  modalBox.innerHTML = buildCityShopHtml(cityKey);
 }
 
-function buildCityShopHtml(cityIdx) {
-  const city = CITIES[cityIdx];
-  const ownedCount = city.properties.filter((_, i) => state.owned.has(propKey(city.key, i))).length;
-  const isMonopoly = state.monopolyCities.has(city.key);
+function buildCityShopHtml(cityKey) {
+  const city = getCity(cityKey);
+  const ownedCount = city.properties.filter((_, i) => state.owned.has(propKey(cityKey, i))).length;
+  const isMonopoly = state.monopolyCities.has(cityKey);
   const remain = city.properties.length - ownedCount;
+  const haveQuiz = state.cityQuizCorrect[cityKey] || 0;
   const banner = isMonopoly
-    ? `<div class="city-monopoly-banner">👑 ${city.name}を独占中！収益2倍でがっぽり！</div>`
-    : "";
+    ? `<div class="city-monopoly-banner">👑 ${city.name}を完全制覇中！収益2倍でがっぽり！</div>`
+    : remain === 1
+      ? `<div class="hint-banner">🔥 あと1件で完全制覇！</div>`
+      : "";
   const couponNote =
     state.discountCoupons > 0
       ? `<div class="modal-sub">🎟️ 割引クーポン ${state.discountCoupons}枚所持中（次の購入から自動適用）</div>`
       : "";
   const propsHtml = city.properties
     .map((p, i) => {
-      const key = propKey(city.key, i);
+      const key = propKey(cityKey, i);
       const owned = state.owned.has(key);
-      const discounted = !owned && state.discountCoupons > 0;
+      const locked = !owned && p.unlock && haveQuiz < p.unlock;
+      const discounted = !owned && !locked && state.discountCoupons > 0;
       const price = discounted ? Math.round(p.price * 0.7) : p.price;
       const affordable = state.cash >= price;
-      let badge;
-      if (owned) badge = `<span class="prop-badge owned-badge">購入済み</span>`;
-      else badge = `<span class="prop-badge">独占まであと${remain}件</span>`;
-      const buyLabel = owned ? "購入済み" : discounted ? `割引 ${price}万円で買う` : `${price}万円で買う`;
-      return `
-      <div class="prop-card ${owned ? "owned" : ""}">
+      let badge, buyEl;
+      if (owned) {
+        badge = `<span class="prop-badge owned-badge">購入済み</span>`;
+        buyEl = `<button class="prop-buy-btn" disabled>購入済み</button>`;
+      } else if (locked) {
+        badge = `<span class="prop-badge locked-badge">🔒 クイズ累計${haveQuiz}/${p.unlock}問正解で解禁</span>`;
+        buyEl = `<span class="prop-lock-icon">🔒</span>`;
+      } else {
+        badge = `<span class="prop-badge">あと${remain}件で完全制覇</span>`;
+        const label = discounted ? `割引 ${fmtMoney(price)}` : fmtMoney(price);
+        buyEl = `<button class="prop-buy-btn ${discounted ? "discounted" : ""}" data-action="buy-prop" data-city="${cityKey}" data-idx="${i}" ${affordable ? "" : "disabled"}>${label}</button>`;
+      }
+      return `<div class="prop-card ${owned ? "owned" : ""} ${locked ? "locked" : ""}" data-prop-row="${i}">
         <div class="prop-icon">${p.icon}</div>
         <div class="prop-info">
           <div class="prop-name">${p.name}</div>
-          <div class="prop-detail">購入価格 ${p.price}万円 ／ 収益 ${p.revenue}万円・ターン</div>
+          <div class="prop-detail">${fmtMoney(p.price)} ／ 年利${p.yieldPct}%（年間収益 ${fmtMoney(p.revenue)}）</div>
           ${badge}
         </div>
-        <button class="prop-buy-btn ${discounted ? "discounted" : ""}" data-action="buy-prop" data-city="${cityIdx}" data-prop="${i}" ${owned || !affordable ? "disabled" : ""}>${buyLabel}</button>
+        ${buyEl}
       </div>`;
     })
     .join("");
   return `
-    <div class="modal-title">${city.icon} ${city.name}の物件</div>
+    <div class="modal-title">${city.icon} ${city.name}の物件（${ownedCount}/${city.properties.length}）</div>
     <div class="modal-sub">${city.catch}</div>
     ${banner}
     ${couponNote}
     <div class="prop-list">${propsHtml}</div>
-    <button class="modal-close-btn primary" data-action="close-modal">サイコロにもどる</button>
+    <button class="modal-close-btn primary" data-action="close-modal">とじる</button>
   `;
 }
 
-function buyProperty(cityIdx, propIdx) {
-  const city = CITIES[cityIdx];
-  const p = city.properties[propIdx];
-  const key = propKey(city.key, propIdx);
+function refreshShopWithPulse(cityKey, idx) {
+  renderCityShopContent(cityKey);
+  const row = modalBox.querySelector(`.prop-card[data-prop-row="${idx}"]`);
+  if (row) {
+    row.classList.add("just-bought");
+    setTimeout(() => row.classList.remove("just-bought"), 500);
+  }
+}
+
+function buyProperty(cityKey, idx) {
+  const city = getCity(cityKey);
+  const p = city.properties[idx];
+  const key = propKey(cityKey, idx);
   if (state.owned.has(key)) return;
+  const haveQuiz = state.cityQuizCorrect[cityKey] || 0;
+  if (p.unlock && haveQuiz < p.unlock) return;
   const discounted = state.discountCoupons > 0;
   const price = discounted ? Math.round(p.price * 0.7) : p.price;
   if (state.cash < price) return;
   state.cash -= price;
   if (discounted) state.discountCoupons--;
   state.owned.add(key);
-  log(`🏠 ${city.name}の「${p.name}」を購入！（${price}万円）`, "good");
+  addLog(`🏠 ${city.name}の「${p.name}」を購入！（${fmtMoney(price)}）`, "good");
 
-  const ownedCount = city.properties.filter((_, i) => state.owned.has(propKey(city.key, i))).length;
+  const ownedCount = city.properties.filter((_, i) => state.owned.has(propKey(cityKey, i))).length;
   let newlyMonopoly = false;
-  if (ownedCount === city.properties.length && !state.monopolyCities.has(city.key)) {
-    state.monopolyCities.add(city.key);
+  if (ownedCount === city.properties.length && !state.monopolyCities.has(cityKey)) {
+    state.monopolyCities.add(cityKey);
     newlyMonopoly = true;
-    log(`👑 ${city.name}を独占した！これから収益が2倍になるよ！`, "highlight");
+    addLog(`👑 ${city.name}を完全制覇！収益が2倍に！`, "highlight");
   }
   renderHeader();
-  renderBoardMarker();
-
-  if (newlyMonopoly) {
-    flashMonopolyCelebration(city, cityIdx);
-  } else {
-    renderCityShopContent(cityIdx);
-  }
+  renderMiniMap();
+  handlePurchaseCelebration(city, p, idx, newlyMonopoly, cityKey);
 }
 
-function flashMonopolyCelebration(city, cityIdx) {
+// ============================================================
+// 演出（購入・完全制覇・節目・トリリオネア達成）
+// ============================================================
+function returnToShop() {
+  renderCityShopContent(activeCityKey);
+  setAfterClose(shopCloseCallback);
+}
+
+function handlePurchaseCelebration(city, prop, idx, newlyMonopoly, cityKey) {
+  const isFirst = !state.firstPurchaseDone;
+  state.firstPurchaseDone = true;
+  const annual = getBaseAnnualRevenue();
+  let milestoneHit = null;
+  MILESTONES.forEach((m) => {
+    if (annual >= m.value && !state.milestonesHit.has(m.value)) {
+      state.milestonesHit.add(m.value);
+      milestoneHit = m;
+    }
+  });
+
+  if (annual >= GOAL_REVENUE && !state.victoryAchieved) {
+    state.victoryAchieved = true;
+    addLog(`🏆 年間収益1兆円突破！トリリオネア達成！`, "highlight");
+    renderHeader();
+    showVictoryModal();
+    return;
+  }
+  if (newlyMonopoly) {
+    flashMonopolyCelebration(city, milestoneHit);
+    return;
+  }
+  if (milestoneHit) {
+    flashMilestoneCelebration(milestoneHit);
+    return;
+  }
+  if (isFirst) {
+    flashFirstPurchaseCelebration();
+    return;
+  }
+  if (prop.price >= 100000) {
+    flashBigPurchaseCelebration(prop);
+    return;
+  }
+  refreshShopWithPulse(cityKey, idx);
+}
+
+function flashMonopolyCelebration(city, milestoneHit) {
+  const milestoneExtra = milestoneHit ? `<div class="celebrate-sub">🎊 さらに${milestoneHit.label}を突破！</div>` : "";
   modalBox.innerHTML = `
-    <div class="monopoly-celebrate">
+    <div class="celebrate">
       <div class="big-emoji">👑</div>
       <div class="confetti-row">🎉🎊✨🎊🎉</div>
-      <div class="modal-title" style="justify-content:center;">${city.name} 独占達成！</div>
-      <div class="modal-sub">これから${city.name}の収益が2倍になるよ！</div>
+      <div class="celebrate-title">${city.name} 完全制覇！</div>
+      <div class="celebrate-sub">これから${city.name}の収益が2倍になるよ！</div>
+      ${milestoneExtra}
       <button class="modal-close-btn primary" data-action="close-modal">やった！</button>
-    </div>
-  `;
-  setAfterClose(() => {
-    setAfterClose(afterEventResolved);
-    renderCityShopContent(cityIdx);
-  });
+    </div>`;
+  setAfterClose(returnToShop);
+}
+
+function flashMilestoneCelebration(milestone) {
+  modalBox.innerHTML = `
+    <div class="celebrate">
+      <div class="big-emoji">🎊</div>
+      <div class="confetti-row">✨💰✨💰✨</div>
+      <div class="celebrate-title">節目突破！</div>
+      <div class="celebrate-sub">${milestone.label} を達成したよ！</div>
+      <button class="modal-close-btn primary" data-action="close-modal">よし！</button>
+    </div>`;
+  setAfterClose(returnToShop);
+}
+
+function flashFirstPurchaseCelebration() {
+  modalBox.innerHTML = `
+    <div class="celebrate">
+      <div class="big-emoji">🏠</div>
+      <div class="confetti-row">🎉✨🎉</div>
+      <div class="celebrate-title">はじめての物件購入！</div>
+      <div class="celebrate-sub">ここから資産を増やしていこう！</div>
+      <button class="modal-close-btn primary" data-action="close-modal">がんばるぞ！</button>
+    </div>`;
+  setAfterClose(returnToShop);
+}
+
+function flashBigPurchaseCelebration(prop) {
+  modalBox.innerHTML = `
+    <div class="celebrate">
+      <div class="big-emoji">💎</div>
+      <div class="confetti-row">✨💰✨</div>
+      <div class="celebrate-title">高額物件を購入！</div>
+      <div class="celebrate-sub">「${prop.name}」を手に入れた！</div>
+      <button class="modal-close-btn primary" data-action="close-modal">よし！</button>
+    </div>`;
+  setAfterClose(returnToShop);
+}
+
+function showVictoryModal() {
+  const assets = state.cash + getOwnedPropertyValueSum();
+  modalRoot.classList.remove("hidden");
+  modalBox.innerHTML = `
+    <div class="celebrate victory">
+      <div class="big-emoji">🏆</div>
+      <div class="confetti-row">🎉💰🎊💰🎉</div>
+      <div class="celebrate-title">トリリオネア達成！</div>
+      <div class="celebrate-sub">年間収益が1兆円を突破したよ！</div>
+      <table style="width:100%;text-align:left;margin:14px 0;border-collapse:collapse;">
+        <tr><td style="padding:6px 4px;font-size:13px;">📅 かかった期間</td><td style="padding:6px 4px;text-align:right;color:var(--accent);font-weight:bold;">${state.year}年${state.month}月</td></tr>
+        <tr><td style="padding:6px 4px;font-size:13px;">📊 総資産</td><td style="padding:6px 4px;text-align:right;color:var(--accent);font-weight:bold;">${fmtMoney(assets)}</td></tr>
+        <tr><td style="padding:6px 4px;font-size:13px;">🏢 所有物件数</td><td style="padding:6px 4px;text-align:right;color:var(--accent);font-weight:bold;">${state.owned.size} / ${getTotalPropertyCount()}件</td></tr>
+        <tr><td style="padding:6px 4px;font-size:13px;">👑 完全制覇都市数</td><td style="padding:6px 4px;text-align:right;color:var(--accent);font-weight:bold;">${state.monopolyCities.size} / ${CITIES.length}都市</td></tr>
+        <tr><td style="padding:6px 4px;font-size:13px;">❓ クイズ正解数</td><td style="padding:6px 4px;text-align:right;color:var(--accent);font-weight:bold;">${state.quizCorrectTotal} / ${state.quizAskedTotal}問</td></tr>
+      </table>
+      <button class="modal-close-btn primary" data-action="continue-play">🎉 続けてあそぶ</button>
+      <button class="modal-close-btn secondary-outline" data-action="restart-game">🔄 最初から</button>
+    </div>`;
 }
 
 // ============================================================
-// 全国物件マップ
+// ログ・全国マップ
 // ============================================================
+function showLogModal() {
+  if (state.busy) return;
+  const entries = state.logHistory.slice().reverse();
+  const html = entries.length
+    ? entries.map((e) => `<div class="log-entry ${e.cls ? "log-" + e.cls : ""}"><span class="log-when">${e.when}</span>${e.text}</div>`).join("")
+    : `<div class="log-empty">まだ記録がありません。</div>`;
+  modalRoot.classList.remove("hidden");
+  modalBox.innerHTML = `<div class="modal-title">📜 プレイログ</div>${html}<button class="modal-close-btn primary" data-action="close-modal">とじる</button>`;
+  setAfterClose(null);
+}
+
 function showOverviewModal() {
+  if (state.busy) return;
   modalRoot.classList.remove("hidden");
   modalBox.innerHTML = buildOverviewHtml();
   setAfterClose(null);
@@ -628,95 +658,56 @@ function buildOverviewHtml() {
   const citiesHtml = CITIES.map((city) => {
     const ownedCount = city.properties.filter((_, i) => state.owned.has(propKey(city.key, i))).length;
     const isMonopoly = state.monopolyCities.has(city.key);
+    const haveQuiz = state.cityQuizCorrect[city.key] || 0;
     const chips = city.properties
       .map((p, i) => {
         const owned = state.owned.has(propKey(city.key, i));
-        return `<span class="mini-chip ${owned ? "owned" : ""}">${p.icon} ${p.name}${owned ? " ✓" : ""}</span>`;
+        const locked = !owned && p.unlock && haveQuiz < p.unlock;
+        return `<span class="mini-chip ${owned ? "owned" : ""} ${locked ? "locked" : ""}">${p.icon} ${p.name}${owned ? " ✓" : locked ? " 🔒" : ""}</span>`;
       })
       .join("");
-    return `
-    <div class="overview-city">
+    return `<div class="overview-city">
       <div class="overview-city-head">
         <span>${city.icon} ${city.name}</span>
-        <span class="badge-mini ${isMonopoly ? "done" : ""}">${ownedCount}/${city.properties.length}件${isMonopoly ? " 👑独占" : ""}</span>
+        <span class="badge-mini ${isMonopoly ? "done" : ""}">${ownedCount}/${city.properties.length}件${isMonopoly ? " 👑完全制覇" : ""}</span>
       </div>
       <div class="overview-props-mini">${chips}</div>
     </div>`;
   }).join("");
-  return `
-    <div class="modal-title">🗺️ 全国物件マップ</div>
-    <div class="modal-sub">東京から大阪まで、全${getTotalPropertyCount()}件の物件だよ。</div>
+  return `<div class="modal-title">🗺️ 全国マップ</div>
+    <div class="modal-sub">現在地: ${getCity(state.currentCity).name}／全${getTotalPropertyCount()}件の物件</div>
     ${citiesHtml}
-    <button class="modal-close-btn primary" data-action="close-modal">とじる</button>
-  `;
-}
-
-// ============================================================
-// 結果発表
-// ============================================================
-function getRank(score) {
-  if (score >= 9000) return "🏆 SS 伝説の大富豪";
-  if (score >= 6500) return "🥇 S 敏腕実業家";
-  if (score >= 4500) return "🥈 A 一人前の投資家";
-  if (score >= 2800) return "🥉 B 見習い実業家";
-  return "🌱 C 駆け出し旅人";
-}
-
-function showResult() {
-  state.gameOver = true;
-  setControlsEnabled(false);
-  const propertyValueSum = getOwnedPropertyValueSum();
-  const totalAssets = state.cash + propertyValueSum;
-  const score = Math.round(
-    state.cash + propertyValueSum * 1.2 + state.cumulativeIncome * 1.5 + state.monopolyCities.size * 800 + state.quizCorrect * 80
-  );
-  const rank = getRank(score);
-  modalRoot.classList.remove("hidden");
-  modalBox.innerHTML = `
-    <div class="modal-title" style="justify-content:center;">🏁 大阪ゴール！ 結果発表</div>
-    <div class="result-score">${fmt(score)}<span style="font-size:16px;">点</span></div>
-    <div class="result-rank">${rank}</div>
-    <table class="result-table">
-      <tr><td>💰 現金</td><td>${fmt(state.cash)}万円</td></tr>
-      <tr><td>🏢 所有物件総額</td><td>${fmt(propertyValueSum)}万円</td></tr>
-      <tr><td>📈 総資産</td><td>${fmt(totalAssets)}万円</td></tr>
-      <tr><td>🔁 累計収益</td><td>${fmt(state.cumulativeIncome)}万円</td></tr>
-      <tr><td>👑 独占都市数</td><td>${state.monopolyCities.size} / ${CITIES.length}都市</td></tr>
-      <tr><td>🏠 所有物件数</td><td>${state.owned.size} / ${getTotalPropertyCount()}件</td></tr>
-      <tr><td>❓ クイズ正解数</td><td>${state.quizCorrect} / ${state.quizAskedCount}問</td></tr>
-    </table>
-    <button class="modal-close-btn primary" data-action="play-again">もう一度あそぶ</button>
-  `;
+    <button class="modal-close-btn primary" data-action="close-modal">とじる</button>`;
 }
 
 // ============================================================
 // ゲーム開始
 // ============================================================
 function startNewGame() {
-  buildBoard();
-  state.pos = 0;
+  state.currentCity = "tokyo";
+  state.year = 1;
+  state.month = 1;
   state.cash = START_CASH;
-  state.cumulativeIncome = 0;
-  state.quizCorrect = 0;
-  state.quizAskedCount = 0;
   state.owned = new Set();
   state.monopolyCities = new Set();
+  state.cityQuizCorrect = {};
+  state.quizCorrectTotal = 0;
+  state.quizAskedTotal = 0;
   state.discountCoupons = 0;
-  state.skipNextTurn = false;
-  state.extraTurnPending = false;
-  state.forceCityCheck = false;
-  state.gameOver = false;
-  state.quizPool = [];
-  state.quizPoolPtr = 0;
-  state.visitedCityKeys = new Set();
+  state.incomeBoost = { multiplier: 1, turnsLeft: 0 };
+  state.milestonesHit = new Set();
+  state.victoryAchieved = false;
+  state.firstPurchaseDone = false;
+  state.quizRecent = [];
+  state.logHistory = [];
+  state.busy = false;
 
-  messageLog.innerHTML = "";
-  log("🎬 ゲームスタート！東京から大阪をめざそう！", "highlight");
   diceFace.textContent = "🎲";
-  renderBoardStripDOM();
+  addLog("🎬 ゲームスタート！物件を買い占めてトリリオネアを目指そう！", "highlight");
   renderHeader();
+  renderCityPanel();
   setControlsEnabled(false);
-  handleCityArrival(0);
+  handleCityArrival("tokyo");
 }
 
 // ============================================================
@@ -727,20 +718,27 @@ function initRefs() {
   gameScreen = document.getElementById("gameScreen");
   startBtn = document.getElementById("startBtn");
 
-  statLocation = document.getElementById("statLocation");
+  statYear = document.getElementById("statYear");
+  statMonth = document.getElementById("statMonth");
+  victoryBadge = document.getElementById("victoryBadge");
+  statAnnualRevenue = document.getElementById("statAnnualRevenue");
+  goalBarFill = document.getElementById("goalBarFill");
   statCash = document.getElementById("statCash");
   statAssets = document.getElementById("statAssets");
   statProps = document.getElementById("statProps");
   statMonopoly = document.getElementById("statMonopoly");
-  statDistance = document.getElementById("statDistance");
-  goalBarFill = document.getElementById("goalBarFill");
-  overviewBtn = document.getElementById("overviewBtn");
 
-  boardStrip = document.getElementById("boardStrip");
-  messageLog = document.getElementById("messageLog");
-  incomeFloat = document.getElementById("incomeFloat");
+  cityIcon = document.getElementById("cityIcon");
+  cityName = document.getElementById("cityName");
+  cityCatch = document.getElementById("cityCatch");
+  miniMap = document.getElementById("miniMap");
+
   diceFace = document.getElementById("diceFace");
-  diceBtn = document.getElementById("diceBtn");
+  directionButtons = document.getElementById("directionButtons");
+
+  shopBtn = document.getElementById("shopBtn");
+  logBtn = document.getElementById("logBtn");
+  mapBtn = document.getElementById("mapBtn");
 
   modalRoot = document.getElementById("modalRoot");
   modalBox = document.getElementById("modalBox");
@@ -753,11 +751,17 @@ function wireEvents() {
     startNewGame();
   });
 
-  diceBtn.addEventListener("click", () => rollDice());
-  overviewBtn.addEventListener("click", () => {
-    if (overviewBtn.disabled) return;
-    showOverviewModal();
+  directionButtons.addEventListener("click", (e) => {
+    const btn = e.target.closest(".dir-btn");
+    if (!btn || btn.disabled) return;
+    const neighbor = { cityKey: btn.dataset.cityKey, lineKey: btn.dataset.lineKey, dir: Number(btn.dataset.dir) };
+    setControlsEnabled(false);
+    rollDiceThenMove(neighbor);
   });
+
+  shopBtn.addEventListener("click", showShopStandalone);
+  logBtn.addEventListener("click", showLogModal);
+  mapBtn.addEventListener("click", showOverviewModal);
 
   modalBox.addEventListener("click", (e) => {
     const optBtn = e.target.closest('[data-action="quiz-opt"]');
@@ -774,7 +778,7 @@ function wireEvents() {
     }
     const buyBtn = e.target.closest('[data-action="buy-prop"]');
     if (buyBtn && !buyBtn.disabled) {
-      buyProperty(Number(buyBtn.dataset.city), Number(buyBtn.dataset.prop));
+      buyProperty(buyBtn.dataset.city, Number(buyBtn.dataset.idx));
       return;
     }
     const closeBtn = e.target.closest('[data-action="close-modal"]');
@@ -782,8 +786,13 @@ function wireEvents() {
       closeModal();
       return;
     }
-    const againBtn = e.target.closest('[data-action="play-again"]');
-    if (againBtn) {
+    const continueBtn = e.target.closest('[data-action="continue-play"]');
+    if (continueBtn) {
+      returnToShop();
+      return;
+    }
+    const restartBtn = e.target.closest('[data-action="restart-game"]');
+    if (restartBtn) {
       modalRoot.classList.add("hidden");
       modalBox.innerHTML = "";
       startNewGame();
