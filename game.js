@@ -394,9 +394,10 @@ async function movePlayerAlongTiles(lineKey, dir, steps) {
   let cur = fromIdx;
   while (cur !== targetIdx) {
     cur += dir;
-    renderTileStepProgress(tiles[cur], line, Math.abs(cur - fromIdx), Math.abs(targetIdx - fromIdx));
+    renderTileStepProgress(tiles[cur], line, dir, Math.abs(cur - fromIdx), Math.abs(targetIdx - fromIdx));
     await delay(220);
   }
+  animatingMove = null;
   const landed = tiles[cur];
   const justClosedFiscalYear = advanceMonth();
   state.pendingKessan = state.pendingKessan || justClosedFiscalYear;
@@ -412,8 +413,10 @@ async function movePlayerAlongTiles(lineKey, dir, steps) {
   }
 }
 
-function renderTileStepProgress(tile, line, stepNum, totalSteps) {
+function renderTileStepProgress(tile, line, dir, stepNum, totalSteps) {
   renderHeader();
+  animatingMove = { lineKey: line.key, dir, stepIndex: stepNum };
+  renderDirectionButtons();
   if (routeProgressEl) {
     routeProgressEl.classList.remove("hidden");
     routeProgressEl.textContent = `🚶 ${line.name} 移動中… (${stepNum}/${totalSteps}マス)`;
@@ -508,7 +511,7 @@ function modeIcons(mode) {
   return modes.map((m) => MODE_ICON[m] || "").join("");
 }
 
-// fromIdx から dir 方向に、次の都市マスまでの実際のマス列（すごろく盤のミニストリップ描画用）を返す
+// fromIdx から dir 方向に、次の都市マスまでの実際のマス列（盤面描画用）を返す
 function getTileSequenceToCity(tiles, fromIdx, dir) {
   const seq = [];
   let i = fromIdx;
@@ -520,68 +523,121 @@ function getTileSequenceToCity(tiles, fromIdx, dir) {
   return seq;
 }
 
-// 方向ボタンの中に埋め込む「現在地→◯マス→目的地」のミニすごろく帯を描く
-function buildMiniStripSvg(seq, destCity) {
-  const stepPx = 16;
-  const n = seq.length;
-  const width = 13 + n * stepPx + 8;
-  const midY = 12;
-  let markers = `<circle cx="7" cy="${midY}" r="3.5" fill="#ffb703" stroke="#0f2540" stroke-width="1" />`;
-  let lastX = 7;
-  seq.forEach((t) => {
-    const cx = lastX + stepPx;
-    markers += `<line x1="${lastX}" y1="${midY}" x2="${cx}" y2="${midY}" stroke="#3a4a5c" stroke-width="1.6" />`;
-    if (t.type === "city") {
-      const st = getCityMapState(destCity);
-      const color = MAP_STATE_COLOR[st.stateClass];
-      markers += `<circle cx="${cx}" cy="${midY}" r="6.5" fill="${color}" stroke="#0f2540" stroke-width="1.2" /><text x="${cx}" y="${midY + 2.6}" font-size="7" text-anchor="middle">${destCity.icon}</text>`;
-    } else if (t.type === "event") {
-      markers += `<path transform="translate(${cx},${midY})" d="M0,-3 L0.9,-0.9 L3,-0.9 L1.3,0.5 L1.9,2.6 L0,1.3 L-1.9,2.6 L-1.3,0.5 L-3,-0.9 L-0.9,-0.9 Z" fill="#ffd166" stroke="#7a5200" stroke-width="0.5" />`;
-    } else if (t.type === "special") {
-      markers += `<circle cx="${cx}" cy="${midY}" r="4" fill="#3a2c14" stroke="#ffb703" stroke-width="1" />`;
-    } else {
-      markers += `<circle cx="${cx}" cy="${midY}" r="2.2" fill="#e8eef5" opacity="0.6" />`;
-    }
-    lastX = cx;
-  });
-  return `<svg viewBox="0 0 ${width} 24" width="${width}" height="24" class="dir-strip-svg">${markers}</svg>`;
-}
-
-function renderDirectionButtons() {
-  let options;
+// 現在地から選べる方向（都市にいるときは分岐先すべて、道中マスにいるときは進む／戻るの2択）
+function getDirectionOptions() {
+  let originCoord, options;
   if (state.onLine) {
     const line = LINES.find((l) => l.key === state.onLine.lineKey);
     const tiles = getLineTiles(line);
-    const fromIdx = state.onLine.tileIdx;
+    originCoord = tiles[state.onLine.tileIdx].coord;
     options = [];
     [state.onLine.dir, -state.onLine.dir].forEach((dir) => {
-      const found = scanToNextCity(tiles, fromIdx, dir);
-      if (found) options.push({ lineKey: line.key, dir, cityKey: found.cityKey, tileCount: found.count, mode: line.mode, tiles, fromIdx });
+      const found = scanToNextCity(tiles, state.onLine.tileIdx, dir);
+      if (found) options.push({ lineKey: line.key, dir, cityKey: found.cityKey, mode: line.mode, tiles, fromIdx: state.onLine.tileIdx });
     });
   } else {
+    originCoord = getCity(state.currentCity).coord;
     options = getNeighbors(state.currentCity).map((n) => {
       const line = LINES.find((l) => l.key === n.lineKey);
       const tiles = getLineTiles(line);
       const curIdx = tileIndexOfCity(line, state.currentCity);
-      const dstIdx = tileIndexOfCity(line, n.cityKey);
-      return { lineKey: n.lineKey, dir: n.dir, cityKey: n.cityKey, tileCount: Math.abs(dstIdx - curIdx), mode: line.mode, tiles, fromIdx: curIdx };
+      return { lineKey: n.lineKey, dir: n.dir, cityKey: n.cityKey, mode: line.mode, tiles, fromIdx: curIdx };
     });
   }
-  const many = options.length > 2;
-  directionButtons.className = "direction-buttons" + (many ? " grid" : "");
-  directionButtons.innerHTML = options
-    .map((n, i) => {
-      const c = getCity(n.cityKey);
-      const spanFull = many && options.length % 2 === 1 && i === options.length - 1 ? ' style="grid-column:1 / -1;"' : "";
-      const seq = getTileSequenceToCity(n.tiles, n.fromIdx, n.dir);
-      const strip = buildMiniStripSvg(seq, c);
-      return `<button class="dir-btn ${options.length === 1 ? "solo" : ""}" data-line-key="${n.lineKey}" data-dir="${n.dir}"${spanFull}>
-        <span class="dir-icon">${c.icon}</span>${c.name}方面へ
-        <div class="dir-strip">${strip}</div>
-        <span class="dir-line-info">${modeIcons(n.mode)}<span class="dir-tile-hint">あと${n.tileCount}マス</span> 🎲</span>
-      </button>`;
+  return { originCoord, options };
+}
+
+// 1マスぶんのマーカー（都市／分岐点／通常／イベント／特殊）を描く
+function buildTileMarkerSvg(t, cx, cy, r) {
+  if (t.type === "city") {
+    const c = getCity(t.cityKey);
+    const st = getCityMapState(c);
+    const color = MAP_STATE_COLOR[st.stateClass];
+    const junction = isJunctionCity(c.key);
+    const shape = junction
+      ? `<rect x="${cx - r}" y="${cy - r}" width="${r * 2}" height="${r * 2}" rx="2.2" fill="${color}" stroke="#0f2540" stroke-width="1.3" transform="rotate(45 ${cx} ${cy})" />`
+      : `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${color}" stroke="#0f2540" stroke-width="1.2" />`;
+    const label = `<text x="${cx}" y="${cy - r - 4}" font-size="9" text-anchor="middle" fill="#e8eef5" font-weight="bold" paint-order="stroke" stroke="#0f2540" stroke-width="2.5">${c.name}</text>`;
+    return `${shape}<text x="${cx}" y="${cy + r * 0.35}" font-size="${r}" text-anchor="middle">${c.icon}</text>${label}`;
+  }
+  if (t.type === "event") {
+    const s = (r * 1.15) / 3;
+    return `<path transform="translate(${cx},${cy}) scale(${s})" d="M0,-3 L0.9,-0.9 L3,-0.9 L1.3,0.5 L1.9,2.6 L0,1.3 L-1.9,2.6 L-1.3,0.5 L-3,-0.9 L-0.9,-0.9 Z" fill="#ffd166" stroke="#7a5200" stroke-width="0.6" />`;
+  }
+  if (t.type === "special") {
+    return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#3a2c14" stroke="#ffb703" stroke-width="1.2" />`;
+  }
+  return `<circle cx="${cx}" cy="${cy}" r="${r * 0.45}" fill="#e8eef5" opacity="0.65" />`;
+}
+
+// 現在地アニメーション中の一時的なコマ座標（移動アニメーション中だけ設定される）
+// 移動アニメーション中だけ設定される、今表示すべき進行方向とマス位置（現在の実座標ではなく盤面上の位置）
+let animatingMove = null; // { lineKey, dir, stepIndex }
+
+// メイン画面用：現在地を中心に方向を放射状に並べた「ローカルすごろく盤」。
+// 都市の密集地（関東など）では実際の距離のままだとラベルが重なってしまうため、
+// マス間隔は盤面用に均等な固定間隔とし、各方向の並び順だけ実際の方角（東西南北）に合わせている。
+function buildLocalBoardSvg() {
+  const { originCoord, options } = getDirectionOptions();
+  const optionSeqs = options.map((opt) => {
+    const seq = getTileSequenceToCity(opt.tiles, opt.fromIdx, opt.dir);
+    const firstCoord = seq.length ? seq[0].coord : originCoord;
+    const bearing = Math.atan2(firstCoord.y - originCoord.y, firstCoord.x - originCoord.x);
+    return { ...opt, seq, bearing };
+  });
+  optionSeqs.sort((a, b) => a.bearing - b.bearing);
+
+  const n = Math.max(optionSeqs.length, 1);
+  const stepUnit = 24;
+  const angleStep = (2 * Math.PI) / n;
+  let maxExtent = stepUnit;
+
+  const rendered = optionSeqs.map((opt, idx) => {
+    const theta = -Math.PI / 2 + idx * angleStep;
+    const dx = Math.cos(theta), dy = Math.sin(theta);
+    const pts = [{ x: 0, y: 0 }];
+    opt.seq.forEach((t, i) => {
+      const dist = stepUnit * (i + 1);
+      pts.push({ x: dx * dist, y: dy * dist });
+    });
+    maxExtent = Math.max(maxExtent, stepUnit * opt.seq.length);
+    return { ...opt, pts };
+  });
+
+  const pathsHtml = rendered
+    .map((opt) => {
+      const pointsAttr = opt.pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+      const markers = opt.seq.map((t, i) => buildTileMarkerSvg(t, opt.pts[i + 1].x, opt.pts[i + 1].y, t.type === "city" ? 9 : 4.2)).join("");
+      return `<g class="local-dir-group" data-line-key="${opt.lineKey}" data-dir="${opt.dir}">
+        <polyline points="${pointsAttr}" fill="none" stroke="transparent" stroke-width="22" stroke-linecap="round" />
+        <polyline points="${pointsAttr}" fill="none" stroke="${PATH_COLOR}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9" />
+        ${markers}
+      </g>`;
     })
     .join("");
+
+  let tokenPt = { x: 0, y: 0 };
+  if (animatingMove) {
+    const match = rendered.find((o) => o.lineKey === animatingMove.lineKey && o.dir === animatingMove.dir);
+    if (match && match.pts[animatingMove.stepIndex]) tokenPt = match.pts[animatingMove.stepIndex];
+  }
+  const originHtml = `<g class="local-origin">
+    <circle cx="${tokenPt.x}" cy="${tokenPt.y}" r="10" fill="none" stroke="#ffb703" stroke-width="1.8"><animate attributeName="r" values="10;13;10" dur="1.3s" repeatCount="indefinite" /></circle>
+    <circle cx="${tokenPt.x}" cy="${tokenPt.y}" r="7.5" fill="#ffb703" stroke="#0f2540" stroke-width="1.3" />
+    <text x="${tokenPt.x}" y="${tokenPt.y + 2.8}" font-size="8.5" text-anchor="middle">🚩</text>
+  </g>`;
+
+  const half = maxExtent + 28;
+  return `<svg viewBox="${-half} ${-half} ${half * 2} ${half * 2}" class="local-board-svg" xmlns="http://www.w3.org/2000/svg">
+    ${pathsHtml}
+    ${originHtml}
+  </svg>`;
+}
+
+function renderDirectionButtons() {
+  if (!directionButtons) return;
+  directionButtons.className = "direction-buttons local-board-wrap";
+  directionButtons.innerHTML = `<div class="local-board-viewport">${buildLocalBoardSvg()}</div>`;
 }
 
 function renderCityDisplayOnly() {
@@ -632,7 +688,7 @@ function closeModal() {
   if (cb) cb();
 }
 function setControlsEnabled(enabled) {
-  document.querySelectorAll(".dir-btn").forEach((b) => (b.disabled = !enabled));
+  if (directionButtons) directionButtons.classList.toggle("controls-disabled", !enabled);
   shopBtn.disabled = !enabled;
   mapBtn.disabled = !enabled;
   collectionBtn.disabled = !enabled;
@@ -2068,10 +2124,11 @@ function wireEvents() {
   });
 
   directionButtons.addEventListener("click", (e) => {
-    const btn = e.target.closest(".dir-btn");
-    if (!btn || btn.disabled) return;
+    if (directionButtons.classList.contains("controls-disabled")) return;
+    const target = e.target.closest("[data-line-key]");
+    if (!target) return;
     setControlsEnabled(false);
-    rollDiceThenMove(btn.dataset.lineKey, Number(btn.dataset.dir));
+    rollDiceThenMove(target.dataset.lineKey, Number(target.dataset.dir));
   });
 
   shopBtn.addEventListener("click", () => {
