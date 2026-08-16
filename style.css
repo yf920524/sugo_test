@@ -756,6 +756,49 @@ button{ font-family:inherit; cursor:pointer; border:none; }
 }
 .collection-pct{ flex-shrink:0; font-size: 11px; color: var(--text-dim); width: 44px; text-align:right; }
 
+.slot-list{ display:flex; flex-direction:column; gap:8px; margin: 12px 0 16px; }
+.slot-row{
+  position: relative;
+  background: rgba(255,255,255,.04);
+  border-radius: 10px;
+  padding: 9px 10px;
+  cursor: pointer;
+  transition: background .1s;
+}
+.slot-row:active{ background: rgba(255,255,255,.08); }
+.slot-row.empty{ opacity: .6; }
+.slot-row-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:8px;
+}
+.slot-num{ font-size: 12.5px; font-weight:bold; color: var(--text); }
+.slot-when{ font-size: 11px; color: var(--text-dim); }
+.slot-empty-label{ font-size: 11.5px; color: var(--text-dim); }
+.slot-details{
+  display:flex;
+  flex-wrap:wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  padding-right: 56px;
+}
+.slot-delete-btn{
+  position: absolute;
+  right: 10px;
+  bottom: 9px;
+  font-size: 10.5px;
+  color: var(--bad);
+  background: rgba(255,255,255,.06);
+  border: none;
+  border-radius: 8px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.slot-delete-btn:active{ background: rgba(255,255,255,.12); }
+
 .tutorial-list{ display:flex; flex-direction:column; gap:10px; margin: 14px 0 18px; }
 .tutorial-item{
   display:flex;
@@ -802,4 +845,81 @@ button{ font-family:inherit; cursor:pointer; border:none; }
   .stat-grid{ display:none; }
   .city-catch{ display:none; }
   .dir-strip{ display:none; }
+}
+
+/* ============================================================
+   PC・タブレット横向き用ワイドレイアウト（画面幅860px以上）
+   ゲームロジック・データ・セーブは共通。#gameScreen の既存の子要素
+   （statusBar/cityPanel/controlArea/bottomNav）を CSS Grid の名前付き
+   エリアへ配置し直すだけで、HTML構造・JSの変更なしにレイアウトを切替える。
+   ============================================================ */
+@media (min-width: 860px){
+  #app{
+    max-width: none;
+    width: 100%;
+  }
+  .start-card{ max-width: 480px; }
+
+  #gameScreen{
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas:
+      "board status"
+      "board city"
+      "board nav";
+    max-width: 1600px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 16px 16px 16px 0;
+  }
+
+  #controlArea{
+    grid-area: board;
+    padding: 16px;
+    height: 100%;
+  }
+  .board-viewport{ cursor: grab; }
+  .board-viewport:active{ cursor: grabbing; }
+
+  #statusBar{
+    grid-area: status;
+    border-bottom: none;
+    border-radius: 16px;
+    margin: 16px 16px 0;
+  }
+
+  #cityPanel{
+    grid-area: city;
+    margin: 10px 16px 0;
+    padding: 16px;
+    overflow-y: auto;
+    align-self: start;
+  }
+
+  #bottomNav{
+    grid-area: nav;
+    flex-direction: column;
+    background: transparent;
+    border-top: none;
+    padding: 0;
+    margin: 10px 16px 16px;
+  }
+  .nav-btn{
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 12px 16px;
+    font-size: 18px;
+  }
+  .nav-btn span{ font-size: 13px; }
+
+  .modal-overlay{
+    max-width: 680px;
+    align-items: center;
+  }
+  .modal-box{
+    border-radius: 22px;
+    max-height: 82vh;
+  }
 }

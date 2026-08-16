@@ -1548,6 +1548,7 @@ function wireBoardGestures(view, viewportEl, canvasEl, opts) {
   let dragLast = null;
   let pinchDist = null;
   let downInfo = null;
+  let wheelSettleTimer = null;
   const TAP_MAX_MOVE = 9;
   const TAP_MAX_MS = 450;
 
@@ -1617,6 +1618,28 @@ function wireBoardGestures(view, viewportEl, canvasEl, opts) {
   viewportEl.addEventListener("pointerup", endPointer);
   viewportEl.addEventListener("pointercancel", endPointer);
   viewportEl.addEventListener("pointerleave", endPointer);
+
+  // マウスホイール：ポインタ位置を中心にズーム（PC版）。
+  // 連打で来る大量のwheelイベント中は座標変換だけ行い、止まったら一度だけ本再描画（LOD更新等）する。
+  viewportEl.addEventListener(
+    "wheel",
+    (e) => {
+      if (e.target.closest(".dice-fab-wrap, .board-zoom-btn")) return;
+      e.preventDefault();
+      const rect = viewportEl.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      zoomKeepingViewportPointFixed(view, px, py, view.scale * factor);
+      applyBoardTransform(view, canvasEl);
+      if (wheelSettleTimer) clearTimeout(wheelSettleTimer);
+      wheelSettleTimer = setTimeout(() => {
+        wheelSettleTimer = null;
+        if (opts.onSettle) opts.onSettle();
+      }, 150);
+    },
+    { passive: false }
+  );
 }
 
 // ============================================================
@@ -2323,14 +2346,113 @@ function deserializeState(data) {
   return s;
 }
 
+// 一覧表示用の要約情報。SaveManagerはこの中身を一切解釈せず、そのまま保存するだけ。
+function buildSaveMeta() {
+  const city = getCity(state.currentCity);
+  return {
+    year: state.year,
+    month: MONTH_ORDER[state.monthIndex],
+    cityName: city.name,
+    totalAssets: state.cash + getOwnedPropertyValueSum(),
+    monopolyCount: state.monopolyCities.size,
+    totalCities: CITIES.length,
+  };
+}
 function autoSave() {
-  SaveManager.save(serializeState());
+  const slot = SaveManager.getActiveSlot();
+  if (!slot) return; // アクティブスロットが未設定の間は何も保存しない（起動直後の保険）
+  SaveManager.saveToSlot(slot, serializeState(), buildSaveMeta());
+}
+
+// ============================================================
+// セーブスロット選択（「続きから」「はじめから」共通のスロット一覧）
+// ============================================================
+let currentSlotListMode = "continue"; // 'continue' | 'new'
+let pendingSlotAction = null; // { kind: 'overwrite'|'delete', slotId }
+
+function fmtSavedAt(ms) {
+  const d = new Date(ms);
+  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+function buildSlotListHtml(mode) {
+  const slots = SaveManager.listSlots();
+  const rows = slots
+    .map((s) => {
+      if (!s.exists) {
+        return `<div class="slot-row empty" data-action="slot-select" data-slot="${s.id}" data-mode="${mode}">
+          <div class="slot-row-head"><span class="slot-num">スロット${s.id}</span><span class="slot-empty-label">${mode === "new" ? "空き（タップで開始）" : "空き"}</span></div>
+        </div>`;
+      }
+      const m = s.meta || {};
+      const hasMeta = m && m.year != null;
+      return `<div class="slot-row" data-action="slot-select" data-slot="${s.id}" data-mode="${mode}">
+        <div class="slot-row-head">
+          <span class="slot-num">スロット${s.id}</span>
+          <span class="slot-when">${fmtSavedAt(s.savedAt)}</span>
+        </div>
+        ${hasMeta
+          ? `<div class="slot-details">
+              <span>📅 第${m.year}期${m.month}月</span>
+              <span>📍 ${m.cityName}</span>
+              <span>📊 ${fmtMoney(m.totalAssets)}</span>
+              <span>👑 ${m.monopolyCount}/${m.totalCities}</span>
+            </div>`
+          : `<div class="slot-details"><span>（旧データ）</span></div>`}
+        <button class="slot-delete-btn" data-action="slot-delete" data-slot="${s.id}">🗑️ 削除</button>
+      </div>`;
+    })
+    .join("");
+  return `<div class="modal-title">${mode === "continue" ? "📂 セーブデータを選ぶ" : "🆕 セーブ先を選ぶ"}</div>
+    <div class="modal-sub">${mode === "continue" ? "続きから遊ぶスロットをタップしてください。" : "保存するスロットをタップしてください。データがあるスロットは上書きされます。"}</div>
+    <div class="slot-list">${rows}</div>
+    <button class="modal-close-btn secondary-outline" data-action="close-modal">もどる</button>`;
+}
+function openSlotListModal(mode) {
+  currentSlotListMode = mode;
+  setModalContent(buildSlotListHtml(mode));
+  setAfterClose(null);
+}
+function refreshSlotListModal() {
+  setModalContent(buildSlotListHtml(currentSlotListMode));
+  setAfterClose(null);
+}
+function enterGameWithSlot(fn, slotId) {
+  modalRoot.classList.add("hidden");
+  modalBox.innerHTML = "";
+  startScreen.classList.add("hidden");
+  gameScreen.classList.remove("hidden");
+  fn(slotId);
+}
+function showSlotOverwriteConfirmModal(slotId) {
+  pendingSlotAction = { kind: "overwrite", slotId };
+  setModalContent(`
+    <div class="celebrate">
+      <div class="big-emoji">⚠️</div>
+      <div class="celebrate-title">スロット${slotId}を上書きしますか？</div>
+      <div class="celebrate-sub">このスロットの今のセーブデータは消えてしまいます。</div>
+      <button class="modal-close-btn primary" data-action="confirm-slot-overwrite">上書きしてはじめる</button>
+      <button class="modal-close-btn secondary-outline" data-action="cancel-slot-dialog">キャンセル</button>
+    </div>`);
+  setAfterClose(null);
+}
+function showSlotDeleteConfirmModal(slotId) {
+  pendingSlotAction = { kind: "delete", slotId };
+  setModalContent(`
+    <div class="celebrate">
+      <div class="big-emoji">🗑️</div>
+      <div class="celebrate-title">スロット${slotId}を削除しますか？</div>
+      <div class="celebrate-sub">このスロットのセーブデータは元に戻せません。</div>
+      <button class="modal-close-btn primary" data-action="confirm-slot-delete">削除する</button>
+      <button class="modal-close-btn secondary-outline" data-action="cancel-slot-dialog">キャンセル</button>
+    </div>`);
+  setAfterClose(null);
 }
 
 // ============================================================
 // ゲーム開始
 // ============================================================
-function startNewGame() {
+function startNewGame(slotId) {
+  SaveManager.setActiveSlot(slotId);
   state = freshState();
   diceFace.textContent = "🎲";
   addLog("🎬 ゲームスタート！物件を買い占めてトリリオネアを目指そう！", "highlight");
@@ -2341,12 +2463,13 @@ function startNewGame() {
   showTutorialModal(() => handleCityArrival("tokyo"));
 }
 
-function continueGame() {
-  const data = SaveManager.load();
+function continueGame(slotId) {
+  const data = SaveManager.loadFromSlot(slotId);
   if (!data) {
-    startNewGame();
+    startNewGame(slotId);
     return;
   }
+  SaveManager.setActiveSlot(slotId);
   state = deserializeState(data);
   diceFace.textContent = "🎲";
   renderHeader();
@@ -2394,24 +2517,15 @@ function initRefs() {
 }
 
 function showTitleScreen() {
-  const hasSave = SaveManager.hasSave();
-  continueBtn.classList.toggle("hidden", !hasSave);
+  continueBtn.classList.toggle("hidden", !SaveManager.hasAnySave());
 }
 
 function wireEvents() {
   continueBtn.addEventListener("click", () => {
-    startScreen.classList.add("hidden");
-    gameScreen.classList.remove("hidden");
-    continueGame();
+    openSlotListModal("continue");
   });
   newGameBtn.addEventListener("click", () => {
-    if (SaveManager.hasSave()) {
-      showConfirmNewGameModal();
-      return;
-    }
-    startScreen.classList.add("hidden");
-    gameScreen.classList.remove("hidden");
-    startNewGame();
+    openSlotListModal("new");
   });
 
   diceFace.addEventListener("click", () => {
@@ -2577,12 +2691,53 @@ function wireEvents() {
     }
     const confirmNewGame = e.target.closest('[data-action="confirm-new-game"]');
     if (confirmNewGame) {
-      SaveManager.clear();
+      const slot = SaveManager.getActiveSlot() || 1;
       modalRoot.classList.add("hidden");
       modalBox.innerHTML = "";
-      startScreen.classList.add("hidden");
-      gameScreen.classList.remove("hidden");
-      startNewGame();
+      startNewGame(slot);
+      return;
+    }
+    // slot-delete ボタンは slot-select の行の中に入れ子になっているので、
+    // closest()が親行にもマッチしてしまわないよう、先にこちらを判定する。
+    const slotDeleteEl = e.target.closest('[data-action="slot-delete"]');
+    if (slotDeleteEl) {
+      showSlotDeleteConfirmModal(Number(slotDeleteEl.dataset.slot));
+      return;
+    }
+    const slotSelectEl = e.target.closest('[data-action="slot-select"]');
+    if (slotSelectEl) {
+      const slotId = Number(slotSelectEl.dataset.slot);
+      const mode = slotSelectEl.dataset.mode;
+      const slot = SaveManager.listSlots().find((s) => s.id === slotId);
+      if (mode === "continue") {
+        if (slot && slot.exists) enterGameWithSlot(continueGame, slotId);
+        return;
+      }
+      // mode === "new"
+      if (slot && slot.exists) showSlotOverwriteConfirmModal(slotId);
+      else enterGameWithSlot(startNewGame, slotId);
+      return;
+    }
+    const confirmSlotOverwrite = e.target.closest('[data-action="confirm-slot-overwrite"]');
+    if (confirmSlotOverwrite) {
+      const slotId = pendingSlotAction ? pendingSlotAction.slotId : null;
+      pendingSlotAction = null;
+      if (slotId) enterGameWithSlot(startNewGame, slotId);
+      return;
+    }
+    const confirmSlotDelete = e.target.closest('[data-action="confirm-slot-delete"]');
+    if (confirmSlotDelete) {
+      const slotId = pendingSlotAction ? pendingSlotAction.slotId : null;
+      pendingSlotAction = null;
+      if (slotId) SaveManager.deleteSlot(slotId);
+      refreshSlotListModal();
+      showTitleScreen();
+      return;
+    }
+    const cancelSlotDialog = e.target.closest('[data-action="cancel-slot-dialog"]');
+    if (cancelSlotDialog) {
+      pendingSlotAction = null;
+      refreshSlotListModal();
       return;
     }
   });
