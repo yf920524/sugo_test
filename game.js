@@ -332,8 +332,10 @@ function getLineTiles(line) {
     tiles.push({ type: "city", cityKey, coord: city.coord });
     if (c < line.cities.length - 1) {
       const nextCity = getCity(line.cities[c + 1]);
+      // マス数は route network v2 で実距離から正規化した line.steps を使う（実距離に概ね比例させるため）。
+      // steps未指定の路線があった場合の保険として、座標距離からの概算にフォールバックする。
       const dist = Math.hypot(nextCity.coord.x - city.coord.x, nextCity.coord.y - city.coord.y);
-      const gapTiles = Math.max(1, Math.min(6, Math.round(dist / 14)));
+      const gapTiles = line.steps != null ? Math.max(1, line.steps) : Math.max(1, Math.min(6, Math.round(dist / 14)));
       const isTwoCityLine = line.cities.length === 2;
       for (let g = 1; g <= gapTiles; g++) {
         const t = g / (gapTiles + 1);
@@ -1633,13 +1635,13 @@ function rectsOverlap(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 function estimateLabelWidth(text, fontSize) {
-  // 日本語は全角文字なので、おおよそ1文字＝fontSize幅として概算する
-  return text.length * fontSize * 0.98;
+  // 日本語は全角文字なので、おおよそ1文字＝fontSize幅として概算する（少し余裕を持たせる）
+  return text.length * fontSize * 1.08;
 }
 const LABEL_DIRS = ["top", "right", "left", "bottom", "topRight", "topLeft", "bottomRight", "bottomLeft"];
 // マーカー中心からラベルをずらす8方向の候補オフセット（マーカー半径・ラベル幅に応じて距離を変える）
 function labelOffsetFor(dir, r, estWidth, fontSize) {
-  const pad = 3;
+  const pad = 4;
   const half = estWidth / 2;
   switch (dir) {
     case "top": return { x: 0, y: -(r + pad + fontSize * 0.55) };
@@ -1734,7 +1736,7 @@ const MAP_STATE_COLOR = {
 // すごろく盤としての統一路線カラー（鉄道／高速道路を厳密に描き分けない）。特殊区間だけ目立たせる。
 const PATH_COLOR = "#d9c08a";
 const SPECIAL_PATH_COLOR = "#ffb703";
-const SPECIAL_ICON = { tunnel: "🚇", bridge: "🌉", strait: "🌊", flight: "✈️" };
+const SPECIAL_ICON = { tunnel: "🚇", bridge: "🌉", strait: "🌊", flight: "✈️", sea: "⛴️" };
 
 // ---- 座標リストをなめらかな閉じた海岸線（カトマル・ロム曲線）に変換する ----
 function smoothClosedPath(points) {
@@ -1753,7 +1755,7 @@ function smoothClosedPath(points) {
   return d + "Z";
 }
 
-const MAP_VIEWBOX = { minX: -20, minY: -45, w: 300, h: 500 };
+const MAP_VIEWBOX = { minX: -210, minY: -60, w: 450, h: 590 };
 const MAP_PX_PER_UNIT = 1.4; // ズーム用キャンバスの基準サイズ（world単位 → CSSピクセル）
 
 // 分岐点（複数の路線が交わる都市）かどうか。すごろく盤では「分岐マス」として区別して描く。
@@ -1807,10 +1809,6 @@ function buildBoardSvg(view) {
             })
             .join("");
         }).join("");
-
-  const gapY = 400;
-  const gapHtml = `<line x1="${minX}" y1="${gapY}" x2="${minX + W}" y2="${gapY}" stroke="#4cc9f0" stroke-width="1" stroke-dasharray="3,4" opacity="0.4" />
-    <text x="${minX + W / 2}" y="${gapY + 12}" font-size="8.5" text-anchor="middle" fill="#a9bdd4">🌊 海（沖縄へは飛行機のみで移動）</text>`;
 
   // ---- メイン盤面だけ：現在地から進める方向をハイライトする（サイコロ前は控えめ、振った後は着地マスを光らせる） ----
   let dirOptions = [];
@@ -1882,9 +1880,6 @@ function buildBoardSvg(view) {
         });
     });
   }
-  const gapCaptionText = "🌊 海（沖縄へは飛行機のみで移動）";
-  const gapCaptionWidth = estimateLabelWidth(gapCaptionText, 8.5);
-  markerObstacles.push({ x: minX + W / 2 - gapCaptionWidth / 2, y: gapY + 12 - 8.5 * 0.85, w: gapCaptionWidth, h: 8.5 * 1.15 });
   const labelCandidates = CITIES.filter((city) => labelEligible(city, city.key === currentCityKey)).map((city) => {
     const isCurrent = city.key === currentCityKey;
     const st = getCityMapState(city);
@@ -1948,7 +1943,6 @@ function buildBoardSvg(view) {
     ${linesHtml}
     ${tileMarksHtml}
     ${highlightHtml}
-    ${gapHtml}
     ${dotsHtml}
     ${landingHtml}
     ${tokenHtml}

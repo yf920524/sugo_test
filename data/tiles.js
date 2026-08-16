@@ -23,8 +23,12 @@ const GENERIC_TILES = [
 // 海峡・橋・トンネル・空路など、特別な区間専用のタイル（LINES の special キーで参照）。
 const SPECIAL_TILES = {
   tunnel: [{ key: "seikan_tunnel", icon: "🚇", name: "青函トンネル", desc: "本州と北海道をつなぐ、海底54kmの大トンネル！", effect: { type: "kessanBonus", min: 5, max: 10 } }],
-  bridge: [{ key: "seto_bridge_tile", icon: "🌉", name: "瀬戸大橋", desc: "本州と四国をつなぐ、鉄道と道路が通る大きな橋！", effect: { type: "cash", min: 0.8, max: 1.5 } }],
+  bridge: [
+    { key: "seto_bridge_tile", icon: "🌉", name: "瀬戸大橋", desc: "本州と四国をつなぐ、鉄道と道路が通る大きな橋！", effect: { type: "cash", min: 0.8, max: 1.5 } },
+    { key: "awaji_bridge_tile", icon: "🌉", name: "明石海峡大橋", desc: "淡路島を経由して本州と四国をつなぐ、世界最大級のつり橋！", effect: { type: "cash", min: 0.8, max: 1.5 } },
+  ],
   strait: [{ key: "kanmon_strait_tile", icon: "🌊", name: "関門海峡", desc: "本州と九州の間の海峡。トンネルと橋でつながっているよ！", effect: { type: "cash", min: 0.7, max: 1.3 } }],
+  sea: [{ key: "ferry_tile", icon: "⛴️", name: "フェリーの旅", desc: "船に乗って海を渡る、のんびり航路の旅！", effect: { type: "kessanBonus", min: 4, max: 9 } }],
   flight: [{ key: "okinawa_flight_tile", icon: "✈️", name: "沖縄への空の旅", desc: "本土から沖縄までは飛行機で空の旅！", effect: { type: "kessanBonus", min: 8, max: 15 } }],
 };
 

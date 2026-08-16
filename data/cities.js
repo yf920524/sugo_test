@@ -1,5 +1,5 @@
 /* ============================================================
-   トリリオネアを目指せ！ - 都市・路線データ（全国編）
+   トリリオネアを目指せ！ - 都市・路線データ（全国編 / Map・Route Network v2）
    ここに都市を追加すれば、ロジック側の変更なしでゲームに反映される。
 
    tier: A=1000万〜9000万 / B=1億〜10億 / C=10億〜100億 /
@@ -9,7 +9,27 @@
             （E=ランドマークは複数条件をあわせ持つ長期目標にしている）
    size: "metro"(大都市)/"hub"(地方拠点都市)/"town"(地方都市)
          ※表示・演出の参考情報。ゲームロジックの必須項目ではない。
+
+   ---- v2での再設計方針 ----
+   都市の画面座標(coord)は手作業の相対配置をやめ、各都市の実際の緯度経度(lat/lng)を
+   1つの投影関数 projectLatLng() に通して機械的に算出する。海岸線(LANDMASS_OUTLINES)も
+   同じ関数を使うため、都市と地図の位置関係が実際の地理と自然に一致する。
+   都市間の道（CONNECTIONS）も現実の主要交通回廊を基準にゼロから再監査し、
+   全都市が孤立・行き止まりにならない（degree>=2）ネットワークに再構築した。
+   ゲームエンジン（game.js）が使う LINES は CONNECTIONS から自動生成する
+   （経路データを二重管理しないため。1本のLINE=必ず2都市間の1区間）。
    ============================================================ */
+
+// ---- 実緯度経度 → ゲーム盤面座標への投影 ----
+// 単純な正距円筒図法（基準緯度でのcos補正つき）。精密な地図投影ではないが、
+// 日本列島程度の範囲であれば形・位置関係が自然に見える簡易近似として十分。
+const MAP_PROJECTION = { lngRef: 136, latTop: 44, scale: 28, cosLatRef: Math.cos((36 * Math.PI) / 180) };
+function projectLatLng(lat, lng) {
+  return {
+    x: Math.round((lng - MAP_PROJECTION.lngRef) * MAP_PROJECTION.cosLatRef * MAP_PROJECTION.scale * 100) / 100,
+    y: Math.round((MAP_PROJECTION.latTop - lat) * MAP_PROJECTION.scale * 100) / 100,
+  };
+}
 
 // 地方データ。全都市を完全制覇すると「地方完全制覇」になる。
 // 同じ都道府県に属する都市どうしのグループ（クイズの「同都道府県」優先度に使用）。
@@ -20,16 +40,101 @@ const PREF_GROUPS = [
   ["fukuoka", "kitakyushu"], // 福岡県
 ];
 
-// 日本地図のシルエット表現用のおおよその海岸線ポイント（都市座標と同じ換算式で作成）。
-// 精密な地図データではないが、北海道・本州・四国・九州の輪郭が一目でわかることを優先している。
-// 沖縄は距離が離れすぎるため、那覇の手動配置座標のまわりに簡易的な島の形を置いている。
-const LANDMASS_OUTLINES = {
-  hokkaido: [[206.3,-33.9],[243.2,8],[264.2,27.3],[245,37.1],[225.5,65.9],[190.9,55.5],[187.1,70.9],[177.2,80.4],[173.1,47.7],[186.6,19.7],[191.4,31.2]],
-  honshu: [[188.2,92.4],[199.3,106.4],[206.4,131.5],[191.8,169.2],[191.4,193],[186.6,223.7],[189,240.5],[173.1,260.6],[169.2,251.7],[158.7,269.3],[150.1,262.8],[147,271.2],[129.5,271.2],[124.8,279.6],[108.4,303.3],[99.4,282.4],[78.8,274],[55,279.6],[32,289.4],[39.1,276.8],[84.1,246.1],[102.5,243.3],[121.6,215.3],[132.7,190.2],[131.1,211.1],[159.6,179],[172.3,151.1],[173.9,128.7],[181.1,86.8]],
-  shikoku: [[78.8,276.8],[91.1,281.3],[90.7,290.8],[83.2,308.9],[73.2,301.9],[64.8,323.5],[57.5,309.8],[58.1,289.4],[75.6,278.2]],
-  kyushu: [[32,289.4],[43.5,308.1],[39.9,346.6],[27.4,371.8],[25.6,360.6],[20.1,366.2],[16.9,332.7],[23.2,321.5],[14.8,322.9],[16.4,303.3],[23.2,299.1]],
-  okinawa: [[50,404],[62,407],[66,415],[60,426],[49,423],[44,412]],
+// 日本地図のシルエット表現用のおおよその海岸線ポイント（緯度経度→投影）。
+// 精密な海岸線データではないが、北海道・本州（房総・伊豆・能登・紀伊などの半島を含む）・
+// 四国・九州・沖縄の輪郭・向き・位置関係が一目で「日本地図」とわかることを優先している。
+const LANDMASS_OUTLINES_LATLNG = {
+  hokkaido: [
+    [45.52, 141.94], // 宗谷岬
+    [44.3, 144.5], // オホーツク海岸
+    [43.3, 145.82], // 納沙布岬
+    [42.9, 144.4], // 釧路沿岸
+    [41.95, 143.15], // 襟裳岬
+    [42.3, 141.0], // 噴火湾
+    [41.43, 140.1], // 渡島半島先端
+    [41.77, 140.73], // 函館
+    [42.6, 140.1], // 渡島半島西岸
+    [43.2, 141.0], // 小樽
+    [43.35, 140.2], // 積丹半島
+    [43.9, 141.6], // 留萌
+    [45.4, 141.7], // 稚内
+  ],
+  honshu: [
+    [41.0, 140.9], // 津軽半島東岸
+    [41.5, 141.3], // 下北半島東
+    [41.3, 141.55], // 下北半島先端
+    [40.5, 141.9], // 八戸沿岸
+    [39.64, 141.98], // 宮古（三陸海岸）
+    [38.4, 141.3], // 石巻・仙台湾
+    [36.95, 140.9], // いわき
+    [36.4, 140.75], // 日立
+    [35.73, 140.87], // 銚子（房総半島東端）
+    [34.98, 139.85], // 館山（房総半島南端）
+    [35.18, 139.67], // 三浦半島
+    [35.0, 139.07], // 熱海（伊豆半島東の付け根）
+    [34.67, 138.95], // 下田（伊豆半島先端）
+    [35.0, 138.85], // 沼津（伊豆半島西の付け根）
+    [34.6, 138.23], // 御前崎
+    [34.6, 137.2], // 渥美半島（伊勢湾口東）
+    [34.3, 136.85], // 志摩半島（伊勢湾口西）
+    [34.07, 136.2], // 尾鷲
+    [33.45, 135.77], // 潮岬（紀伊半島先端）
+    [33.7, 135.3], // 田辺
+    [34.23, 135.17], // 和歌山沿岸
+    [34.65, 135.18], // 大阪湾北岸
+    [34.65, 135.0], // 明石海峡
+    [34.5, 133.9], // 岡山沿岸
+    [34.35, 132.45], // 広島沿岸
+    [33.95, 130.93], // 下関（本州西端）
+    [34.42, 131.4], // 萩
+    [35.55, 133.05], // 島根半島
+    [35.62, 134.24], // 鳥取沿岸
+    [35.6, 135.7], // 若狭湾
+    [35.65, 136.05], // 敦賀
+    [36.6, 136.6], // 能登半島の付け根
+    [37.45, 137.25], // 能登半島先端
+    [36.95, 137.2], // 富山湾東
+    [36.8, 137.4], // 富山沿岸
+    [37.95, 139.05], // 新潟沿岸
+    [38.9, 139.85], // 酒田
+    [39.72, 139.9], // 秋田沿岸
+    [40.6, 140.3], // 津軽半島西岸
+  ],
+  shikoku: [
+    [34.4, 134.1], // 高松沿岸
+    [34.25, 134.65], // 徳島北東
+    [33.25, 134.18], // 室戸岬
+    [33.5, 133.55], // 高知沿岸
+    [32.73, 133.02], // 足摺岬
+    [33.22, 132.56], // 宇和島
+    [33.84, 132.6], // 松山西岸
+    [34.07, 133.0], // 今治
+  ],
+  kyushu: [
+    [33.9, 130.85], // 北九州
+    [33.28, 131.5], // 別府
+    [31.9, 131.55], // 宮崎沿岸
+    [31.35, 131.33], // 都井岬
+    [31.0, 130.66], // 佐多岬（九州最南端）
+    [31.4, 130.2], // 薩摩半島西岸
+    [31.6, 130.0], // 鹿児島西岸
+    [32.5, 130.0], // 天草
+    [32.7, 129.7], // 長崎半島
+    [33.45, 129.9], // 唐津
+    [33.65, 130.4], // 福岡北岸
+  ],
+  okinawa: [
+    [26.5, 127.9],
+    [26.35, 128.05],
+    [26.05, 128.0],
+    [25.85, 127.85],
+    [26.0, 127.6],
+    [26.3, 127.55],
+  ],
 };
+const LANDMASS_OUTLINES = Object.fromEntries(
+  Object.entries(LANDMASS_OUTLINES_LATLNG).map(([key, pts]) => [key, pts.map(([lat, lng]) => { const p = projectLatLng(lat, lng); return [p.x, p.y]; })])
+);
 
 const REGIONS = [
   { key: "hokkaido", name: "北海道", icon: "❄️" },
@@ -44,58 +149,10 @@ const REGIONS = [
   { key: "okinawa", name: "沖縄", icon: "🌺" },
 ];
 
-// 路線データ（双方向・自由移動、一度通った都市にも何度でも戻れる）。
-// 同じ都市キーが複数の路線に含まれると、その都市が分岐点（ジャンクション）になる。
-// mode: "rail"(鉄道) / "highway"(高速道路) / 配列で両方 / "flight"(空路・沖縄のみの例外)
-// density: 都市間で「道中イベント」が起きやすいかどうかの目安（0=幹線で少ない…3=特別区間で多い）
-// special: true の区間は海峡・橋・トンネルなど特別な道中イベント演出を使う
-// 将来、都市・路線を追加する場合はこの配列に新しい路線オブジェクトを足すだけでよい。
-const LINES = [
-  { key: "tokaido", name: "東海道ライン", mode: "rail", density: 0, cities: ["tokyo", "yokohama", "odawara", "shizuoka", "hamamatsu", "nagoya"] },
-  { key: "tohoku_shinkansen", name: "東北ライン", mode: "rail", density: 0, cities: ["tokyo", "utsunomiya", "fukushima", "sendai", "morioka", "aomori"] },
-  { key: "joetsu", name: "上越ライン", mode: "rail", density: 1, cities: ["tokyo", "saitama", "takasaki", "niigata"] },
-  { key: "chuo", name: "中央ライン", mode: "rail", density: 2, cities: ["tokyo", "kofu", "nagano"] },
-  { key: "hokuriku", name: "北陸ライン", mode: "rail", density: 1, cities: ["nagano", "toyama", "kanazawa", "fukui", "kyoto"] },
-  { key: "tokai_branch", name: "東海支線", mode: "rail", density: 1, cities: ["nagoya", "gifu"] },
-  { key: "kinki", name: "近畿ライン", mode: "rail", density: 0, cities: ["nagoya", "kyoto", "osaka", "kobe"] },
-  { key: "kinki_branch", name: "近畿支線", mode: "rail", density: 1, cities: ["osaka", "nara"] },
-  { key: "sanyo", name: "山陽ライン", mode: "rail", density: 0, cities: ["osaka", "okayama", "hiroshima", "yamaguchi"] },
-  { key: "sanin_branch", name: "山陰ライン", mode: "rail", density: 2, cities: ["okayama", "tottori", "matsue", "yamaguchi"] },
-  { key: "chiba_branch", name: "総武支線", mode: "rail", density: 1, cities: ["tokyo", "chiba"] },
-  { key: "akita_shinkansen", name: "秋田新幹線", mode: "rail", density: 2, cities: ["morioka", "akita"] },
-  { key: "yamagata_shinkansen", name: "山形新幹線", mode: "rail", density: 2, cities: ["fukushima", "yamagata"] },
-  { key: "uetsu", name: "羽越ライン", mode: "rail", density: 2, cities: ["akita", "niigata"] },
-  { key: "hokuriku_coast", name: "北陸海岸ライン", mode: "rail", density: 1, cities: ["niigata", "toyama"] },
-  { key: "joban", name: "常磐ライン", mode: "rail", density: 1, cities: ["tokyo", "mito"] },
-  { key: "kintetsu_ise", name: "近鉄伊勢ライン", mode: "rail", density: 2, cities: ["nagoya", "ise"] },
-  { key: "biwako_branch", name: "琵琶湖ライン", mode: "rail", density: 1, cities: ["kyoto", "otsu"] },
-  { key: "kinokuni", name: "紀州ライン", mode: "rail", density: 2, cities: ["osaka", "wakayama"] },
-
-  { key: "hokkaido_main", name: "北海道本線", mode: "rail", density: 2, cities: ["hakodate", "sapporo", "asahikawa"] },
-  { key: "hokkaido_east", name: "道東ライン", mode: "rail", density: 2, cities: ["sapporo", "kushiro"] },
-  { key: "seikan", name: "青函トンネル", mode: "rail", density: 3, special: "tunnel", cities: ["aomori", "hakodate"] },
-
-  { key: "shikoku_tokushima", name: "高徳ライン", mode: "rail", density: 1, cities: ["takamatsu", "tokushima"] },
-  { key: "shikoku_matsuyama", name: "予讃ライン", mode: "rail", density: 2, cities: ["takamatsu", "matsuyama"] },
-  { key: "shikoku_kochi", name: "土讃ライン", mode: "rail", density: 2, cities: ["takamatsu", "kochi"] },
-  { key: "shikoku_south", name: "南予ハイウェイ", mode: "highway", density: 2, cities: ["matsuyama", "kochi"] },
-  { key: "seto_bridge", name: "瀬戸大橋", mode: ["rail", "highway"], density: 3, special: "bridge", cities: ["okayama", "takamatsu"] },
-
-  { key: "kyushu_shinkansen", name: "九州新幹線", mode: "rail", density: 0, cities: ["fukuoka", "kumamoto", "kagoshima"] },
-  { key: "kyushu_kitakyushu", name: "鹿児島本線", mode: "rail", density: 1, cities: ["fukuoka", "kitakyushu"] },
-  { key: "kyushu_nagasaki", name: "長崎ライン", mode: "rail", density: 1, cities: ["fukuoka", "saga", "nagasaki"] },
-  { key: "kyushu_west", name: "有明海ハイウェイ", mode: "highway", density: 2, cities: ["nagasaki", "kumamoto"] },
-  { key: "kyushu_oita", name: "日豊ライン北", mode: "rail", density: 1, cities: ["fukuoka", "oita"] },
-  { key: "kyushu_east", name: "日豊ライン南", mode: "rail", density: 2, cities: ["oita", "miyazaki", "kagoshima"] },
-  { key: "kanmon", name: "関門海峡", mode: ["rail", "highway"], density: 3, special: "strait", cities: ["kitakyushu", "yamaguchi"] },
-
-  { key: "okinawa_flight", name: "沖縄航空路", mode: "flight", density: 3, special: "flight", cities: ["kagoshima", "naha"] },
-];
-
 const CITIES = [
   // ================= 関東 =================
   {
-    key: "tokyo", name: "東京", icon: "🗼", region: "kanto", size: "metro", coord: { x: 171, y: 241 },
+    key: "tokyo", name: "東京", icon: "🗼", region: "kanto", size: "metro", lat: 35.68, lng: 139.77,
     catch: "日本の首都、大都会！",
     properties: [
       { name: "下町のたい焼き屋", icon: "🐟", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -109,7 +166,7 @@ const CITIES = [
     ],
   },
   {
-    key: "yokohama", name: "横浜", icon: "⚓", region: "kanto", size: "metro", coord: { x: 170, y: 248 },
+    key: "yokohama", name: "横浜", icon: "⚓", region: "kanto", size: "metro", lat: 35.44, lng: 139.64,
     catch: "港とみなとみらいの街！",
     properties: [
       { name: "中華街の点心店", icon: "🥟", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
@@ -123,7 +180,7 @@ const CITIES = [
     ],
   },
   {
-    key: "odawara", name: "小田原", icon: "🏯", region: "kanto", size: "town", coord: { x: 162, y: 253 },
+    key: "odawara", name: "小田原", icon: "🏯", region: "kanto", size: "town", lat: 35.26, lng: 139.15,
     catch: "お城とかまぼこの町！",
     properties: [
       { name: "かまぼこ専門店", icon: "🐟", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -137,7 +194,7 @@ const CITIES = [
     ],
   },
   {
-    key: "chiba", name: "千葉", icon: "🥜", region: "kanto", size: "town", coord: { x: 177, y: 243 },
+    key: "chiba", name: "千葉", icon: "🥜", region: "kanto", size: "town", lat: 35.61, lng: 140.12,
     catch: "落花生と漁業、幕張の展示都市！",
     properties: [
       { name: "落花生農園", icon: "🥜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -149,7 +206,7 @@ const CITIES = [
     ],
   },
   {
-    key: "saitama", name: "さいたま", icon: "🚃", region: "kanto", size: "town", coord: { x: 170, y: 236 },
+    key: "saitama", name: "さいたま", icon: "🚃", region: "kanto", size: "town", lat: 35.86, lng: 139.65,
     catch: "鉄道と盆栽の街、交通の要衝！",
     properties: [
       { name: "大宮盆栽園", icon: "🌳", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -161,7 +218,7 @@ const CITIES = [
     ],
   },
   {
-    key: "utsunomiya", name: "宇都宮", icon: "🥟", region: "kanto", size: "town", coord: { x: 174, y: 216 },
+    key: "utsunomiya", name: "宇都宮", icon: "🥟", region: "kanto", size: "town", lat: 36.57, lng: 139.88,
     catch: "餃子といちご、関東平野の農業拠点！",
     properties: [
       { name: "餃子専門店", icon: "🥟", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -173,7 +230,7 @@ const CITIES = [
     ],
   },
   {
-    key: "takasaki", name: "高崎", icon: "🪅", region: "kanto", size: "town", coord: { x: 160, y: 223 },
+    key: "takasaki", name: "高崎", icon: "🪅", region: "kanto", size: "town", lat: 36.32, lng: 139.0,
     catch: "だるまとこんにゃく、新幹線分岐点！",
     properties: [
       { name: "高崎だるま工房", icon: "🪅", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -185,7 +242,7 @@ const CITIES = [
     ],
   },
   {
-    key: "mito", name: "水戸", icon: "🍡", region: "kanto", size: "town", coord: { x: 182.6, y: 222.6 },
+    key: "mito", name: "水戸", icon: "🍡", region: "kanto", size: "town", lat: 36.37, lng: 140.47,
     catch: "納豆と偕楽園、茨城の県庁所在地！",
     properties: [
       { name: "納豆専門店", icon: "🍡", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -198,7 +255,7 @@ const CITIES = [
 
   // ================= 東北 =================
   {
-    key: "sendai", name: "仙台", icon: "🌲", region: "tohoku", size: "hub", coord: { x: 189, y: 169 },
+    key: "sendai", name: "仙台", icon: "🌲", region: "tohoku", size: "hub", lat: 38.27, lng: 140.87,
     catch: "杜の都、東北一の商都！",
     properties: [
       { name: "牛タン専門店", icon: "🐮", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -211,7 +268,7 @@ const CITIES = [
     ],
   },
   {
-    key: "morioka", name: "盛岡", icon: "🍜", region: "tohoku", size: "town", coord: { x: 194, y: 129 },
+    key: "morioka", name: "盛岡", icon: "🍜", region: "tohoku", size: "town", lat: 39.7, lng: 141.15,
     catch: "わんこそばと南部鉄器の町！",
     properties: [
       { name: "わんこそば屋", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -223,7 +280,7 @@ const CITIES = [
     ],
   },
   {
-    key: "fukushima", name: "福島", icon: "🍑", region: "tohoku", size: "town", coord: { x: 183, y: 183 },
+    key: "fukushima", name: "福島", icon: "🍑", region: "tohoku", size: "town", lat: 37.75, lng: 140.47,
     catch: "桃と果樹園、新幹線の交通拠点！",
     properties: [
       { name: "桃農園", icon: "🍑", tier: "A", price: 1100, yieldPct: 18, revenue: 198 },
@@ -235,7 +292,7 @@ const CITIES = [
     ],
   },
   {
-    key: "aomori", name: "青森", icon: "🍎", region: "tohoku", size: "town", coord: { x: 187, y: 97 },
+    key: "aomori", name: "青森", icon: "🍎", region: "tohoku", size: "town", lat: 40.82, lng: 140.74,
     catch: "りんごとねぶた祭り、津軽海峡の玄関口！",
     properties: [
       { name: "りんご農園", icon: "🍎", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -247,7 +304,7 @@ const CITIES = [
     ],
   },
   {
-    key: "akita", name: "秋田", icon: "🐕", region: "tohoku", size: "town", coord: { x: 177.1, y: 128.2 },
+    key: "akita", name: "秋田", icon: "🐕", region: "tohoku", size: "town", lat: 39.72, lng: 140.1,
     catch: "きりたんぽと秋田犬、日本海側の米どころ！",
     properties: [
       { name: "きりたんぽ屋", icon: "🍢", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -258,7 +315,7 @@ const CITIES = [
     ],
   },
   {
-    key: "yamagata", name: "山形", icon: "🍒", region: "tohoku", size: "town", coord: { x: 180.9, y: 169.5 },
+    key: "yamagata", name: "山形", icon: "🍒", region: "tohoku", size: "town", lat: 38.24, lng: 140.36,
     catch: "さくらんぼと将棋の駒、蔵王温泉の町！",
     properties: [
       { name: "さくらんぼ農園", icon: "🍒", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -271,7 +328,7 @@ const CITIES = [
 
   // ================= 甲信越・北陸 =================
   {
-    key: "niigata", name: "新潟", icon: "🌾", region: "koshinetsu_hokuriku", size: "hub", coord: { x: 160, y: 179 },
+    key: "niigata", name: "新潟", icon: "🌾", region: "koshinetsu_hokuriku", size: "hub", lat: 37.92, lng: 139.04,
     catch: "コシヒカリと日本酒、日本海の港町！",
     properties: [
       { name: "コシヒカリ農園", icon: "🌾", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -284,7 +341,7 @@ const CITIES = [
     ],
   },
   {
-    key: "nagano", name: "長野", icon: "🍜", region: "koshinetsu_hokuriku", size: "town", coord: { x: 147, y: 214 },
+    key: "nagano", name: "長野", icon: "🍜", region: "koshinetsu_hokuriku", size: "town", lat: 36.65, lng: 138.18,
     catch: "そばと高原野菜、精密機械の街！",
     properties: [
       { name: "信州そば屋", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -296,7 +353,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kofu", name: "甲府", icon: "🍇", region: "koshinetsu_hokuriku", size: "town", coord: { x: 153, y: 242 },
+    key: "kofu", name: "甲府", icon: "🍇", region: "koshinetsu_hokuriku", size: "town", lat: 35.66, lng: 138.57,
     catch: "ぶどうとワイン、武田信玄の城下町！",
     properties: [
       { name: "ぶどう農園", icon: "🍇", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -308,7 +365,7 @@ const CITIES = [
     ],
   },
   {
-    key: "toyama", name: "富山", icon: "🦑", region: "koshinetsu_hokuriku", size: "town", coord: { x: 131, y: 213 },
+    key: "toyama", name: "富山", icon: "🦑", region: "koshinetsu_hokuriku", size: "town", lat: 36.7, lng: 137.21,
     catch: "配置薬とホタルイカ、黒部立山の玄関口！",
     properties: [
       { name: "配置薬の老舗", icon: "💊", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -320,7 +377,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kanazawa", name: "金沢", icon: "✨", region: "koshinetsu_hokuriku", size: "hub", coord: { x: 123, y: 217 },
+    key: "kanazawa", name: "金沢", icon: "✨", region: "koshinetsu_hokuriku", size: "hub", lat: 36.59, lng: 136.63,
     catch: "金箔と加賀友禅、伝統工芸の町！",
     properties: [
       { name: "金箔工房", icon: "✨", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
@@ -333,7 +390,7 @@ const CITIES = [
     ],
   },
   {
-    key: "fukui", name: "福井", icon: "🦖", region: "koshinetsu_hokuriku", size: "town", coord: { x: 115.6, y: 230.4 },
+    key: "fukui", name: "福井", icon: "🦖", region: "koshinetsu_hokuriku", size: "town", lat: 36.06, lng: 136.22,
     catch: "恐竜化石とめがね産業、伝統工芸の町！",
     properties: [
       { name: "恐竜グッズショップ", icon: "🦖", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -346,7 +403,7 @@ const CITIES = [
 
   // ================= 東海 =================
   {
-    key: "shizuoka", name: "静岡", icon: "🍵", region: "tokai", size: "hub", coord: { x: 150, y: 261 },
+    key: "shizuoka", name: "静岡", icon: "🍵", region: "tokai", size: "hub", lat: 34.98, lng: 138.38,
     catch: "お茶とわさびの名産地！",
     properties: [
       { name: "茶畑の直売所", icon: "🍵", tier: "A", price: 1100, yieldPct: 18, revenue: 198 },
@@ -360,7 +417,7 @@ const CITIES = [
     ],
   },
   {
-    key: "hamamatsu", name: "浜松", icon: "🎵", region: "tokai", size: "hub", coord: { x: 140, y: 268 },
+    key: "hamamatsu", name: "浜松", icon: "🎵", region: "tokai", size: "hub", lat: 34.71, lng: 137.73,
     catch: "楽器とうなぎの町！",
     properties: [
       { name: "うなぎ専門店", icon: "🐍", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -374,7 +431,7 @@ const CITIES = [
     ],
   },
   {
-    key: "nagoya", name: "名古屋", icon: "🏯", region: "tokai", size: "metro", coord: { x: 127, y: 255 },
+    key: "nagoya", name: "名古屋", icon: "🏯", region: "tokai", size: "metro", lat: 35.18, lng: 136.91,
     catch: "自動車と味噌の大都市！",
     properties: [
       { name: "八丁味噌の蔵", icon: "🍶", tier: "A", price: 1300, yieldPct: 17, revenue: 221 },
@@ -388,7 +445,7 @@ const CITIES = [
     ],
   },
   {
-    key: "gifu", name: "岐阜", icon: "🛶", region: "tokai", size: "town", coord: { x: 124, y: 248 },
+    key: "gifu", name: "岐阜", icon: "🛶", region: "tokai", size: "town", lat: 35.42, lng: 136.76,
     catch: "鵜飼いと和傘、長良川の町！",
     properties: [
       { name: "鵜飼い観光船", icon: "🛶", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -400,7 +457,7 @@ const CITIES = [
     ],
   },
   {
-    key: "ise", name: "伊勢", icon: "⛩️", region: "tokai", size: "town", coord: { x: 123.3, y: 274.3 },
+    key: "ise", name: "伊勢", icon: "⛩️", region: "tokai", size: "town", lat: 34.49, lng: 136.71,
     catch: "伊勢神宮と真珠、三重の歴史の町！",
     properties: [
       { name: "伊勢うどん店", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -413,7 +470,7 @@ const CITIES = [
 
   // ================= 近畿 =================
   {
-    key: "kyoto", name: "京都", icon: "⛩️", region: "kansai", size: "metro", coord: { x: 108, y: 260 },
+    key: "kyoto", name: "京都", icon: "⛩️", region: "kansai", size: "metro", lat: 35.01, lng: 135.77,
     catch: "歴史あるみやこの町！",
     properties: [
       { name: "八つ橋の老舗", icon: "🍡", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
@@ -427,7 +484,7 @@ const CITIES = [
     ],
   },
   {
-    key: "osaka", name: "大阪", icon: "🐙", region: "kansai", size: "metro", coord: { x: 104, y: 269 },
+    key: "osaka", name: "大阪", icon: "🐙", region: "kansai", size: "metro", lat: 34.69, lng: 135.5,
     catch: "食い倒れの商都、天下の台所！",
     properties: [
       { name: "たこ焼き屋", icon: "🐙", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -441,7 +498,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kobe", name: "神戸", icon: "🌉", region: "kansai", size: "hub", coord: { x: 99, y: 269 },
+    key: "kobe", name: "神戸", icon: "🌉", region: "kansai", size: "hub", lat: 34.69, lng: 135.2,
     catch: "港とファッション、洋菓子の異人館通り！",
     properties: [
       { name: "神戸洋菓子店", icon: "🍰", tier: "A", price: 1300, yieldPct: 17, revenue: 221 },
@@ -454,7 +511,7 @@ const CITIES = [
     ],
   },
   {
-    key: "nara", name: "奈良", icon: "🦌", region: "kansai", size: "town", coord: { x: 109, y: 269 },
+    key: "nara", name: "奈良", icon: "🦌", region: "kansai", size: "town", lat: 34.69, lng: 135.83,
     catch: "鹿と大仏、古都の観光地！",
     properties: [
       { name: "鹿せんべい店", icon: "🦌", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -466,7 +523,7 @@ const CITIES = [
     ],
   },
   {
-    key: "otsu", name: "大津", icon: "🌊", region: "kansai", size: "town", coord: { x: 110, y: 260 },
+    key: "otsu", name: "大津", icon: "🌊", region: "kansai", size: "town", lat: 35.0, lng: 135.87,
     catch: "琵琶湖と忍者の里、滋賀の県庁所在地！",
     properties: [
       { name: "鮒ずし専門店", icon: "🐟", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -477,7 +534,7 @@ const CITIES = [
     ],
   },
   {
-    key: "wakayama", name: "和歌山", icon: "🍊", region: "kansai", size: "town", coord: { x: 98.9, y: 281.5 },
+    key: "wakayama", name: "和歌山", icon: "🍊", region: "kansai", size: "town", lat: 34.23, lng: 135.17,
     catch: "みかんとパンダ、紀州梅の南の玄関口！",
     properties: [
       { name: "有田みかん農園", icon: "🍊", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -490,7 +547,7 @@ const CITIES = [
 
   // ================= 中国 =================
   {
-    key: "okayama", name: "岡山", icon: "🍑", region: "chugoku", size: "hub", coord: { x: 79, y: 270 },
+    key: "okayama", name: "岡山", icon: "🍑", region: "chugoku", size: "hub", lat: 34.66, lng: 133.93,
     catch: "白桃とマスカット、デニムの街！",
     properties: [
       { name: "白桃農園", icon: "🍑", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -503,7 +560,7 @@ const CITIES = [
     ],
   },
   {
-    key: "hiroshima", name: "広島", icon: "🦪", region: "chugoku", size: "hub", coord: { x: 56, y: 277 },
+    key: "hiroshima", name: "広島", icon: "🦪", region: "chugoku", size: "hub", lat: 34.4, lng: 132.46,
     catch: "牡蠣とお好み焼き、自動車と平和の街！",
     properties: [
       { name: "牡蠣養殖場", icon: "🦪", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -516,7 +573,7 @@ const CITIES = [
     ],
   },
   {
-    key: "tottori", name: "鳥取", icon: "🏜️", region: "chugoku", size: "town", coord: { x: 84, y: 246 },
+    key: "tottori", name: "鳥取", icon: "🏜️", region: "chugoku", size: "town", lat: 35.5, lng: 134.24,
     catch: "砂丘となし、松葉ガニの漁港！",
     properties: [
       { name: "二十世紀梨農園", icon: "🍐", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -528,7 +585,7 @@ const CITIES = [
     ],
   },
   {
-    key: "yamaguchi", name: "山口", icon: "🐡", region: "chugoku", size: "town", coord: { x: 40, y: 283 },
+    key: "yamaguchi", name: "山口", icon: "🐡", region: "chugoku", size: "town", lat: 34.19, lng: 131.47,
     catch: "ふぐと石油化学、関門海峡の玄関口！",
     properties: [
       { name: "ふぐ料理店", icon: "🐡", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -540,7 +597,7 @@ const CITIES = [
     ],
   },
   {
-    key: "matsue", name: "松江", icon: "⛩️", region: "chugoku", size: "town", coord: { x: 65.3, y: 246.9 },
+    key: "matsue", name: "松江", icon: "⛩️", region: "chugoku", size: "town", lat: 35.47, lng: 133.05,
     catch: "出雲大社としじみ、神々の国・島根！",
     properties: [
       { name: "出雲そば店", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -553,7 +610,7 @@ const CITIES = [
 
   // ================= 北海道 =================
   {
-    key: "sapporo", name: "札幌", icon: "❄️", region: "hokkaido", size: "metro", coord: { x: 197, y: 35 },
+    key: "sapporo", name: "札幌", icon: "❄️", region: "hokkaido", size: "metro", lat: 43.06, lng: 141.35,
     catch: "雪まつりとビール、北海道の中心都市！",
     properties: [
       { name: "味噌ラーメン店", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -567,7 +624,7 @@ const CITIES = [
     ],
   },
   {
-    key: "hakodate", name: "函館", icon: "🌃", region: "hokkaido", size: "town", coord: { x: 187, y: 71 },
+    key: "hakodate", name: "函館", icon: "🌃", region: "hokkaido", size: "town", lat: 41.77, lng: 140.73,
     catch: "夜景とイカ漁、五稜郭の港町！",
     properties: [
       { name: "イカ漁業組合", icon: "🦑", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -579,7 +636,7 @@ const CITIES = [
     ],
   },
   {
-    key: "asahikawa", name: "旭川", icon: "🪑", region: "hokkaido", size: "town", coord: { x: 213, y: 15 },
+    key: "asahikawa", name: "旭川", icon: "🪑", region: "hokkaido", size: "town", lat: 43.77, lng: 142.37,
     catch: "家具と動物園、雪の町！",
     properties: [
       { name: "しょうゆラーメン店", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -591,7 +648,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kushiro", name: "釧路", icon: "🦢", region: "hokkaido", size: "town", coord: { x: 245, y: 37 },
+    key: "kushiro", name: "釧路", icon: "🦢", region: "hokkaido", size: "town", lat: 42.98, lng: 144.38,
     catch: "漁業と湿原、酪農の町！",
     properties: [
       { name: "毛ガニ漁業組合", icon: "🦀", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -604,7 +661,7 @@ const CITIES = [
   },
   // ================= 四国 =================
   {
-    key: "takamatsu", name: "高松", icon: "🍜", region: "shikoku", size: "hub", coord: { x: 81, y: 279 },
+    key: "takamatsu", name: "高松", icon: "🍜", region: "shikoku", size: "hub", lat: 34.34, lng: 134.05,
     catch: "うどんと瀬戸内海、四国の玄関口！",
     properties: [
       { name: "讃岐うどん店", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -617,7 +674,7 @@ const CITIES = [
     ],
   },
   {
-    key: "matsuyama", name: "松山", icon: "♨️", region: "shikoku", size: "hub", coord: { x: 61, y: 293 },
+    key: "matsuyama", name: "松山", icon: "♨️", region: "shikoku", size: "hub", lat: 33.84, lng: 132.77,
     catch: "みかんと道後温泉、四国最大の城下町！",
     properties: [
       { name: "みかん農園", icon: "🍊", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -630,7 +687,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kochi", name: "高知", icon: "🐟", region: "shikoku", size: "town", coord: { x: 73, y: 300 },
+    key: "kochi", name: "高知", icon: "🐟", region: "shikoku", size: "town", lat: 33.56, lng: 133.53,
     catch: "カツオと坂本龍馬、太平洋の町！",
     properties: [
       { name: "カツオのたたき専門店", icon: "🐟", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -642,7 +699,7 @@ const CITIES = [
     ],
   },
   {
-    key: "tokushima", name: "徳島", icon: "💃", region: "shikoku", size: "town", coord: { x: 89, y: 286 },
+    key: "tokushima", name: "徳島", icon: "💃", region: "shikoku", size: "town", lat: 34.07, lng: 134.56,
     catch: "阿波おどりとすだち、渦潮の町！",
     properties: [
       { name: "すだち農園", icon: "🍈", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -655,7 +712,7 @@ const CITIES = [
   },
   // ================= 九州 =================
   {
-    key: "fukuoka", name: "福岡", icon: "🍜", region: "kyushu", size: "metro", coord: { x: 23, y: 299 },
+    key: "fukuoka", name: "福岡", icon: "🍜", region: "kyushu", size: "metro", lat: 33.59, lng: 130.4,
     catch: "とんこつラーメンと明太子、九州最大の商都！",
     properties: [
       { name: "とんこつラーメン店", icon: "🍜", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -669,7 +726,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kitakyushu", name: "北九州", icon: "🏭", region: "kyushu", size: "hub", coord: { x: 31, y: 291 },
+    key: "kitakyushu", name: "北九州", icon: "🏭", region: "kyushu", size: "hub", lat: 33.88, lng: 130.88,
     catch: "製鉄と関門海峡、工業の町！",
     properties: [
       { name: "門司港レトロ土産店", icon: "🏮", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
@@ -682,7 +739,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kumamoto", name: "熊本", icon: "🐴", region: "kyushu", size: "hub", coord: { x: 29, y: 322 },
+    key: "kumamoto", name: "熊本", icon: "🐴", region: "kyushu", size: "hub", lat: 32.79, lng: 130.74,
     catch: "馬肉と半導体、阿蘇の城下町！",
     properties: [
       { name: "馬肉料理店", icon: "🐴", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
@@ -695,7 +752,7 @@ const CITIES = [
     ],
   },
   {
-    key: "nagasaki", name: "長崎", icon: "🍰", region: "kyushu", size: "town", coord: { x: 15, y: 323 },
+    key: "nagasaki", name: "長崎", icon: "🍰", region: "kyushu", size: "town", lat: 32.75, lng: 129.87,
     catch: "カステラと造船、異国情緒の港町！",
     properties: [
       { name: "カステラ専門店", icon: "🍰", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -707,7 +764,7 @@ const CITIES = [
     ],
   },
   {
-    key: "oita", name: "大分", icon: "♨️", region: "kyushu", size: "town", coord: { x: 42, y: 309 },
+    key: "oita", name: "大分", icon: "♨️", region: "kyushu", size: "town", lat: 33.24, lng: 131.61,
     catch: "別府温泉とかぼす、一村一品の町！",
     properties: [
       { name: "かぼす農園", icon: "🍋", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -719,7 +776,7 @@ const CITIES = [
     ],
   },
   {
-    key: "miyazaki", name: "宮崎", icon: "🥭", region: "kyushu", size: "town", coord: { x: 39, y: 346 },
+    key: "miyazaki", name: "宮崎", icon: "🥭", region: "kyushu", size: "town", lat: 31.91, lng: 131.42,
     catch: "マンゴーと肉牛、南国リゾートの町！",
     properties: [
       { name: "マンゴー農園", icon: "🥭", tier: "A", price: 1000, yieldPct: 18, revenue: 180 },
@@ -731,7 +788,7 @@ const CITIES = [
     ],
   },
   {
-    key: "kagoshima", name: "鹿児島", icon: "🌋", region: "kyushu", size: "hub", coord: { x: 26, y: 355 },
+    key: "kagoshima", name: "鹿児島", icon: "🌋", region: "kyushu", size: "hub", lat: 31.6, lng: 130.56,
     catch: "桜島と黒豚、焼酎の町！",
     properties: [
       { name: "黒豚料理店", icon: "🐷", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
@@ -744,7 +801,7 @@ const CITIES = [
     ],
   },
   {
-    key: "saga", name: "佐賀", icon: "🏺", region: "kyushu", size: "town", coord: { x: 21.7, y: 308.9 },
+    key: "saga", name: "佐賀", icon: "🏺", region: "kyushu", size: "town", lat: 33.25, lng: 130.3,
     catch: "有田焼と吉野ヶ里遺跡、九州の焼き物どころ！",
     properties: [
       { name: "佐賀牛焼肉店", icon: "🥩", tier: "A", price: 1200, yieldPct: 18, revenue: 216 },
@@ -756,7 +813,7 @@ const CITIES = [
   },
   // ================= 沖縄 =================
   {
-    key: "naha", name: "那覇", icon: "🌺", region: "okinawa", size: "hub", coord: { x: 55, y: 415 },
+    key: "naha", name: "那覇", icon: "🌺", region: "okinawa", size: "hub", lat: 26.21, lng: 127.68,
     catch: "南国リゾートと琉球文化の島！",
     properties: [
       { name: "シーサー工房", icon: "🦁", tier: "A", price: 1200, yieldPct: 17, revenue: 204 },
@@ -769,3 +826,205 @@ const CITIES = [
     ],
   },
 ];
+
+// 都市の緯度経度からゲーム盤面座標(coord)を確定する（すべての都市で共通の投影を使う）。
+CITIES.forEach((c) => {
+  c.coord = projectLatLng(c.lat, c.lng);
+});
+
+// ============================================================
+// 都市間の接続網（Map / Route Network v2）
+// 現実の主要交通回廊を基準にゼロから監査・再構築した。全都市 degree>=2（行き止まりなし）、
+// 各地方に複数ルート・周回ルートを持たせている。name/岐阜⇔京都のような「中間都市を飛ばす」
+// 直結は作らず、実際に経由する都市を通す（名古屋→京都は 岐阜→大津 を経由する）。
+// type: "road"(通常の幹線)/"tunnel"(海底トンネル)/"bridge"(橋)/"strait"(海峡・橋+トンネル)/
+//       "sea"(海路・フェリー)/"air"(空路)
+// steps: 実距離をもとに正規化した都市間マス数（短距離2〜3・中距離4〜6・長距離7〜10が目安）。
+// ============================================================
+const CONNECTIONS = [
+  // ---- 北海道（周回あり：札幌-旭川-釧路-札幌） ----
+  { from: "sapporo", to: "hakodate", type: "road", steps: 5 },
+  { from: "sapporo", to: "asahikawa", type: "road", steps: 4 },
+  { from: "sapporo", to: "kushiro", type: "road", steps: 8 },
+  { from: "asahikawa", to: "kushiro", type: "road", steps: 6 },
+  { from: "aomori", to: "hakodate", type: "tunnel", steps: 4 },
+
+  // ---- 東北（内陸・太平洋側・日本海側の複数ルート） ----
+  { from: "aomori", to: "morioka", type: "road", steps: 5 },
+  { from: "aomori", to: "akita", type: "road", steps: 5 },
+  { from: "morioka", to: "akita", type: "road", steps: 3 },
+  { from: "morioka", to: "sendai", type: "road", steps: 5 },
+  { from: "akita", to: "yamagata", type: "road", steps: 6 },
+  { from: "sendai", to: "yamagata", type: "road", steps: 2 },
+  { from: "sendai", to: "fukushima", type: "road", steps: 3 },
+  { from: "yamagata", to: "fukushima", type: "road", steps: 2 },
+  { from: "yamagata", to: "niigata", type: "road", steps: 4 },
+  { from: "fukushima", to: "niigata", type: "road", steps: 4 },
+  { from: "fukushima", to: "utsunomiya", type: "road", steps: 5 },
+
+  // ---- 関東（東京一極の放射状だけにせず、北関東の横方向ルートを持たせる） ----
+  { from: "tokyo", to: "yokohama", type: "road", steps: 2 },
+  { from: "tokyo", to: "saitama", type: "road", steps: 2 },
+  { from: "tokyo", to: "chiba", type: "road", steps: 2 },
+  { from: "tokyo", to: "mito", type: "road", steps: 3 },
+  { from: "tokyo", to: "kofu", type: "road", steps: 4 },
+  { from: "yokohama", to: "odawara", type: "road", steps: 2 },
+  { from: "chiba", to: "saitama", type: "road", steps: 2 },
+  { from: "chiba", to: "mito", type: "road", steps: 3 },
+  { from: "saitama", to: "utsunomiya", type: "road", steps: 3 },
+  { from: "saitama", to: "takasaki", type: "road", steps: 3 },
+  { from: "utsunomiya", to: "takasaki", type: "road", steps: 3 },
+  { from: "utsunomiya", to: "mito", type: "road", steps: 2 },
+  { from: "takasaki", to: "nagano", type: "road", steps: 3 },
+  { from: "takasaki", to: "niigata", type: "road", steps: 6 },
+
+  // ---- 甲信越・北陸（新潟・長野・富山の内陸ネットワーク） ----
+  { from: "niigata", to: "nagano", type: "road", steps: 5 },
+  { from: "niigata", to: "toyama", type: "road", steps: 7 },
+  { from: "nagano", to: "toyama", type: "road", steps: 3 },
+  { from: "nagano", to: "kofu", type: "road", steps: 4 },
+  { from: "kofu", to: "shizuoka", type: "road", steps: 3 },
+  { from: "toyama", to: "kanazawa", type: "road", steps: 2 },
+  { from: "toyama", to: "gifu", type: "road", steps: 5 },
+  { from: "kanazawa", to: "fukui", type: "road", steps: 3 },
+  { from: "fukui", to: "otsu", type: "road", steps: 4 },
+
+  // ---- 東海（岐阜を行き止まりにしない。名古屋→京都は岐阜・大津経由） ----
+  { from: "odawara", to: "shizuoka", type: "road", steps: 3 },
+  { from: "shizuoka", to: "hamamatsu", type: "road", steps: 3 },
+  { from: "hamamatsu", to: "nagoya", type: "road", steps: 3 },
+  { from: "nagoya", to: "gifu", type: "road", steps: 2 },
+  { from: "nagoya", to: "ise", type: "road", steps: 3 },
+  { from: "gifu", to: "otsu", type: "road", steps: 3 },
+  { from: "ise", to: "nara", type: "road", steps: 3 },
+
+  // ---- 近畿（密度高め・周回あり） ----
+  { from: "otsu", to: "kyoto", type: "road", steps: 2 },
+  { from: "otsu", to: "nara", type: "road", steps: 2 },
+  { from: "kyoto", to: "osaka", type: "road", steps: 2 },
+  { from: "kyoto", to: "nara", type: "road", steps: 2 },
+  { from: "osaka", to: "kobe", type: "road", steps: 2 },
+  { from: "osaka", to: "nara", type: "road", steps: 2 },
+  { from: "osaka", to: "wakayama", type: "road", steps: 2 },
+  { from: "nara", to: "wakayama", type: "road", steps: 3 },
+
+  // ---- 中国（山陽側・山陰側どちらにもルート、周回あり） ----
+  { from: "kobe", to: "okayama", type: "road", steps: 4 },
+  { from: "kobe", to: "tottori", type: "road", steps: 4 },
+  { from: "okayama", to: "tottori", type: "road", steps: 3 },
+  { from: "okayama", to: "hiroshima", type: "road", steps: 5 },
+  { from: "tottori", to: "matsue", type: "road", steps: 4 },
+  { from: "matsue", to: "hiroshima", type: "road", steps: 4 },
+  { from: "matsue", to: "yamaguchi", type: "road", steps: 7 },
+  { from: "hiroshima", to: "yamaguchi", type: "road", steps: 3 },
+
+  // ---- 四国（高松・徳島・松山・高知の周回） ----
+  { from: "takamatsu", to: "tokushima", type: "road", steps: 2 },
+  { from: "takamatsu", to: "matsuyama", type: "road", steps: 5 },
+  { from: "takamatsu", to: "kochi", type: "road", steps: 3 },
+  { from: "tokushima", to: "kochi", type: "road", steps: 4 },
+  { from: "kochi", to: "matsuyama", type: "road", steps: 3 },
+
+  // ---- 九州（北九州・西九州・東九州・南九州を複数経路で） ----
+  { from: "fukuoka", to: "kitakyushu", type: "road", steps: 2 },
+  { from: "fukuoka", to: "saga", type: "road", steps: 2 },
+  { from: "fukuoka", to: "kumamoto", type: "road", steps: 3 },
+  { from: "kitakyushu", to: "oita", type: "road", steps: 3 },
+  { from: "saga", to: "nagasaki", type: "road", steps: 3 },
+  { from: "saga", to: "kumamoto", type: "road", steps: 3 },
+  { from: "nagasaki", to: "kumamoto", type: "road", steps: 3 },
+  { from: "kumamoto", to: "oita", type: "road", steps: 3 },
+  { from: "kumamoto", to: "kagoshima", type: "road", steps: 5 },
+  { from: "oita", to: "miyazaki", type: "road", steps: 5 },
+  { from: "miyazaki", to: "kagoshima", type: "road", steps: 3 },
+
+  // ---- 海路・橋・海峡・空路（通常の道と描き分ける特別区間） ----
+  { from: "okayama", to: "takamatsu", type: "bridge", steps: 2 }, // 瀬戸大橋
+  { from: "kobe", to: "tokushima", type: "bridge", steps: 4 }, // 明石海峡大橋・大鳴門橋（淡路島経由）
+  { from: "yamaguchi", to: "kitakyushu", type: "strait", steps: 3 }, // 関門海峡
+  { from: "hiroshima", to: "matsuyama", type: "sea", steps: 3 }, // 瀬戸内海フェリー
+  { from: "wakayama", to: "tokushima", type: "sea", steps: 2 }, // 南海フェリー
+  { from: "kagoshima", to: "naha", type: "sea", steps: 10 }, // 鹿児島⇔那覇フェリー（長距離）
+  { from: "fukuoka", to: "naha", type: "air", steps: 3 }, // 那覇への空路
+];
+
+// ゲームエンジンは「1路線=2都市間の1区間」というLINES形式で移動を扱うため、
+// CONNECTIONSから自動生成する（経路データを二重管理しないため）。
+const CONNECTION_MODE = { road: "rail", tunnel: "rail", bridge: ["rail", "highway"], strait: ["rail", "highway"], sea: "ferry", air: "flight" };
+const CONNECTION_SPECIAL = { tunnel: "tunnel", bridge: "bridge", strait: "strait", sea: "sea", air: "flight" };
+const CONNECTION_DENSITY = { road: 0, tunnel: 3, bridge: 3, strait: 3, sea: 3, air: 3 };
+function cityNameOf(key) {
+  const c = CITIES.find((x) => x.key === key);
+  return c ? c.name : key;
+}
+const LINES = CONNECTIONS.map((c) => ({
+  key: `${c.from}_${c.to}`,
+  name: `${cityNameOf(c.from)}―${cityNameOf(c.to)}`,
+  mode: CONNECTION_MODE[c.type] || "rail",
+  density: CONNECTION_DENSITY[c.type] != null ? CONNECTION_DENSITY[c.type] : 0,
+  special: CONNECTION_SPECIAL[c.type],
+  steps: c.steps,
+  cities: [c.from, c.to],
+}));
+
+// ============================================================
+// 起動時の自動バリデーション（開発用）。ネットワークが壊れていたらすぐ分かるようにする。
+// ============================================================
+function validateCityNetwork() {
+  const errors = [];
+  if (CITIES.length !== 53) errors.push(`都市数が53ではありません: ${CITIES.length}`);
+
+  const degree = new Map(CITIES.map((c) => [c.key, 0]));
+  const seenPairs = new Set();
+  CONNECTIONS.forEach((c) => {
+    if (c.from === c.to) errors.push(`自己接続があります: ${c.from}`);
+    const pairKey = [c.from, c.to].sort().join("-");
+    if (seenPairs.has(pairKey)) errors.push(`接続が重複しています: ${c.from}-${c.to}`);
+    seenPairs.add(pairKey);
+    if (!degree.has(c.from)) errors.push(`未知の都市キーです: ${c.from}`);
+    if (!degree.has(c.to)) errors.push(`未知の都市キーです: ${c.to}`);
+    degree.set(c.from, (degree.get(c.from) || 0) + 1);
+    degree.set(c.to, (degree.get(c.to) || 0) + 1);
+  });
+
+  const isolated = [];
+  const deadEnd = [];
+  degree.forEach((d, key) => {
+    if (d === 0) isolated.push(key);
+    else if (d === 1) deadEnd.push(key);
+  });
+  if (isolated.length) errors.push(`孤立した都市があります: ${isolated.join(", ")}`);
+  if (deadEnd.length) errors.push(`行き止まりの都市があります(degree=1): ${deadEnd.join(", ")}`);
+
+  // 連結性チェック（BFS）
+  const adj = new Map(CITIES.map((c) => [c.key, []]));
+  CONNECTIONS.forEach((c) => {
+    if (adj.has(c.from)) adj.get(c.from).push(c.to);
+    if (adj.has(c.to)) adj.get(c.to).push(c.from);
+  });
+  const visited = new Set();
+  const queue = [CITIES[0].key];
+  visited.add(CITIES[0].key);
+  while (queue.length) {
+    const cur = queue.shift();
+    (adj.get(cur) || []).forEach((n) => {
+      if (!visited.has(n)) {
+        visited.add(n);
+        queue.push(n);
+      }
+    });
+  }
+  const unreachable = CITIES.map((c) => c.key).filter((k) => !visited.has(k));
+  if (unreachable.length) errors.push(`メインのネットワークから孤立した都市があります: ${unreachable.join(", ")}`);
+
+  if (errors.length) {
+    // eslint-disable-next-line no-console
+    console.error("[都市ネットワーク検証エラー]\n" + errors.join("\n"));
+  } else if (typeof console !== "undefined" && console.info) {
+    console.info(`[都市ネットワーク検証] OK: 53都市 / ${CONNECTIONS.length}接続 / 孤立なし / 行き止まりなし / 連結`);
+  }
+  return { errors, degree };
+}
+if (typeof window !== "undefined") {
+  validateCityNetwork();
+}
