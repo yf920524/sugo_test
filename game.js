@@ -29,7 +29,7 @@ let startScreen, gameScreen, continueBtn, newGameBtn;
 let statYear, statMonth, victoryBadge, menuBtn, statAnnualRevenue, goalBarFill;
 let statCash, statAssets, statProps, statMonopoly;
 let cityIcon, cityName, cityCatch, cityRegionBadge, routeProgressEl;
-let diceFace, diceHintEl, mainBoardViewport, mainBoardCanvas;
+let diceFace, mainBoardViewport, mainBoardCanvas;
 let shopBtn, mapBtn, collectionBtn, logBtn;
 let modalRoot, modalBox;
 
@@ -426,11 +426,6 @@ function renderTileStepProgress(tile, line, dir, stepNum, totalSteps) {
 // サイコロを振った後、まだ方向を選んでいない間だけ出目を保持する（振る前・移動確定後はnull）
 let pendingDiceValue = null;
 
-function updateDiceHint() {
-  if (!diceHintEl) return;
-  diceHintEl.textContent = pendingDiceValue == null ? "🎲 タップしてサイコロを振ろう！" : `🎯 ${pendingDiceValue}が出た！進む方向をタップ`;
-}
-
 // 桃鉄と同じ操作順：まずサイコロを振って出目を確定し、そのあとで進む方向を選ぶ
 function rollDiceOnly() {
   if (pendingDiceValue !== null) return;
@@ -447,7 +442,6 @@ function rollDiceOnly() {
       diceFace.classList.add("dice-used");
       addLog(`🎲 ${value}が出た！進む方向を選ぼう`);
       pendingDiceValue = value;
-      updateDiceHint();
       renderMainBoard();
     }
   }, 70);
@@ -668,7 +662,6 @@ function renderCityPanel() {
     diceFace.textContent = "🎲";
     diceFace.classList.remove("dice-used");
   }
-  updateDiceHint();
   // 自分の手番が来たタイミングでだけ現在地へ視点を戻す（手番中の自由なパン・ズームは尊重する）
   centerMainBoardOnCurrent();
 }
@@ -1558,7 +1551,7 @@ function wireBoardGestures(view, viewportEl, canvasEl, opts) {
 
   viewportEl.addEventListener("pointerdown", (e) => {
     // サイコロ・ズームボタンなど盤面の上に重ねた操作用パーツは、盤面ジェスチャーに巻き込まない
-    if (e.target.closest(".dice-fab, .board-zoom-btn")) return;
+    if (e.target.closest(".dice-fab-wrap, .board-zoom-btn")) return;
     try {
       viewportEl.setPointerCapture(e.pointerId);
     } catch (err) {
@@ -1633,22 +1626,67 @@ function getLod(scale) {
   if (scale < 1.9) return LOD_MID;
   return LOD_NEAR;
 }
-const MIN_LABEL_PX = 30; // ラベル同士がこの画面ピクセル距離より近ければ、優先度の低い方を隠す
-// candidates: [{key,x,y,priority}]。優先度の高い順に置いていき、既に置いたラベルに近すぎるものは非表示にする。
-// 非表示でもマーカー自体は常に描画されるので、タップすれば個別に確認できる。
-function selectVisibleLabels(candidates, scale) {
-  const minDistWorld = MIN_LABEL_PX / (scale * MAP_PX_PER_UNIT);
+// 縮小表示でも常に都市名を出す「主要都市」（各地方の位置関係をつかむための代表都市）
+const MAJOR_CITY_KEYS = new Set(["sapporo", "sendai", "niigata", "tokyo", "yokohama", "nagoya", "kyoto", "osaka", "hiroshima", "fukuoka"]);
+
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+function estimateLabelWidth(text, fontSize) {
+  // 日本語は全角文字なので、おおよそ1文字＝fontSize幅として概算する
+  return text.length * fontSize * 0.98;
+}
+const LABEL_DIRS = ["top", "right", "left", "bottom", "topRight", "topLeft", "bottomRight", "bottomLeft"];
+// マーカー中心からラベルをずらす8方向の候補オフセット（マーカー半径・ラベル幅に応じて距離を変える）
+function labelOffsetFor(dir, r, estWidth, fontSize) {
+  const pad = 3;
+  const half = estWidth / 2;
+  switch (dir) {
+    case "top": return { x: 0, y: -(r + pad + fontSize * 0.55) };
+    case "bottom": return { x: 0, y: r + pad + fontSize * 0.95 };
+    case "right": return { x: r + pad + half, y: fontSize * 0.3 };
+    case "left": return { x: -(r + pad + half), y: fontSize * 0.3 };
+    case "topRight": return { x: r * 0.7 + pad + half * 0.7, y: -(r * 0.7 + pad) };
+    case "topLeft": return { x: -(r * 0.7 + pad + half * 0.7), y: -(r * 0.7 + pad) };
+    case "bottomRight": return { x: r * 0.7 + pad + half * 0.7, y: r * 0.7 + pad + fontSize * 0.85 };
+    default: return { x: -(r * 0.7 + pad + half * 0.7), y: r * 0.7 + pad + fontSize * 0.85 }; // bottomLeft
+  }
+}
+// 都市ラベルを重要度の高い順に置いていき、各ラベルは上下左右斜め8方向の候補から
+// 他のラベル・他都市のマーカーと重ならない位置を選ぶ。空きがなければ非表示にする
+// （マーカー自体は常に描画するので、タップすれば個別に名前を確認できる）。
+// candidates: [{key,x,y,r,text,fontSize,priority,forceShow}] / obstacleBoxes: [{x,y,w,h}]（他都市マーカーなど）
+function layoutCityLabels(candidates, obstacleBoxes) {
+  const placedBoxes = obstacleBoxes.slice();
   const sorted = [...candidates].sort((a, b) => b.priority - a.priority);
-  const placed = [];
-  const shown = new Set();
+  const positions = new Map();
   sorted.forEach((c) => {
-    const tooClose = placed.some((p) => Math.hypot(p.x - c.x, p.y - c.y) < minDistWorld);
-    if (!tooClose) {
-      placed.push(c);
-      shown.add(c.key);
+    const estWidth = estimateLabelWidth(c.text, c.fontSize);
+    let placedBox = null;
+    let placedPos = null;
+    for (const dir of LABEL_DIRS) {
+      const off = labelOffsetFor(dir, c.r, estWidth, c.fontSize);
+      const lx = c.x + off.x, ly = c.y + off.y;
+      const box = { x: lx - estWidth / 2, y: ly - c.fontSize * 0.85, w: estWidth, h: c.fontSize * 1.15 };
+      if (!placedBoxes.some((b) => rectsOverlap(b, box))) {
+        placedBox = box;
+        placedPos = { x: lx, y: ly + c.fontSize * 0.32 };
+        break;
+      }
+    }
+    if (!placedBox && c.forceShow) {
+      // 現在地など「必ず表示」のラベルは、空きがなくても一番上に強制表示する
+      const off = labelOffsetFor("top", c.r, estWidth, c.fontSize);
+      const lx = c.x + off.x, ly = c.y + off.y;
+      placedBox = { x: lx - estWidth / 2, y: ly - c.fontSize * 0.85, w: estWidth, h: c.fontSize * 1.15 };
+      placedPos = { x: lx, y: ly + c.fontSize * 0.32 };
+    }
+    if (placedBox) {
+      placedBoxes.push(placedBox);
+      positions.set(c.key, placedPos);
     }
   });
-  return shown;
+  return positions;
 }
 function distToSegment(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay;
@@ -1737,17 +1775,17 @@ function buildBoardSvg(view) {
     .join("");
 
   // 道（路線）は「鉄道／高速道路」を厳密に描き分けず、1本のすごろく街道として統一表現する。
-  // 特殊区間（海峡・橋・トンネル・空路）だけ色とアイコンで目立たせる。
+  // 都市マスより視覚的優先度を落とし、背景として控えめに見えるようにする。
   const linesHtml = LINES.map((line) => {
     const color = line.special ? SPECIAL_PATH_COLOR : PATH_COLOR;
-    const width = line.special ? 2.6 : 1.8;
+    const width = line.special ? 1.7 : 1.0;
     const pts = line.cities.map((ck) => getCity(ck).coord);
     const pointsAttr = pts.map((p) => `${p.x},${p.y}`).join(" ");
-    return `<polyline points="${pointsAttr}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" opacity="0.7" />`;
+    return `<polyline points="${pointsAttr}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" opacity="${line.special ? 0.55 : 0.4}" />`;
   }).join("");
 
   // マス目（通常マス・イベントマス・特殊マス）：都市間を実際に数えられるように1マスずつ描く。
-  // 縮小時（LOD_FAR）は街道の見通しを優先し、マスの粒は省く。
+  // 縮小時（LOD_FAR）は街道の見通しを優先し、マスの粒は省く。都市マスより控えめな見た目にする。
   const tileMarksHtml =
     lod === LOD_FAR
       ? ""
@@ -1758,14 +1796,14 @@ function buildBoardSvg(view) {
             .map((t) => {
               if (t.type === "special") {
                 return lod === LOD_NEAR
-                  ? `<g><circle cx="${t.coord.x}" cy="${t.coord.y}" r="4.2" fill="#3a2c14" stroke="${SPECIAL_PATH_COLOR}" stroke-width="1" /><text x="${t.coord.x}" y="${t.coord.y + 2.6}" font-size="6.5" text-anchor="middle">${SPECIAL_ICON[line.special] || "★"}</text></g>`
-                  : `<circle cx="${t.coord.x}" cy="${t.coord.y}" r="2.6" fill="#3a2c14" stroke="${SPECIAL_PATH_COLOR}" stroke-width="1" />`;
+                  ? `<g><circle cx="${t.coord.x}" cy="${t.coord.y}" r="3" fill="#3a2c14" stroke="${SPECIAL_PATH_COLOR}" stroke-width="0.9" /><text x="${t.coord.x}" y="${t.coord.y + 2}" font-size="5" text-anchor="middle">${SPECIAL_ICON[line.special] || "★"}</text></g>`
+                  : `<circle cx="${t.coord.x}" cy="${t.coord.y}" r="1.8" fill="#3a2c14" stroke="${SPECIAL_PATH_COLOR}" stroke-width="0.9" />`;
               }
               if (t.type === "event") {
-                const s = lod === LOD_NEAR ? 1 : 0.75;
-                return `<path transform="translate(${t.coord.x},${t.coord.y}) scale(${s})" d="M0,-3.2 L1,-1 L3.2,-1 L1.4,0.5 L2,2.8 L0,1.4 L-2,2.8 L-1.4,0.5 L-3.2,-1 L-1,-1 Z" fill="#ffd166" stroke="#7a5200" stroke-width="0.5" />`;
+                const s = lod === LOD_NEAR ? 0.85 : 0.6;
+                return `<path transform="translate(${t.coord.x},${t.coord.y}) scale(${s})" d="M0,-3.2 L1,-1 L3.2,-1 L1.4,0.5 L2,2.8 L0,1.4 L-2,2.8 L-1.4,0.5 L-3.2,-1 L-1,-1 Z" fill="#ffd166" stroke="#7a5200" stroke-width="0.5" opacity="0.9" />`;
               }
-              return `<circle cx="${t.coord.x}" cy="${t.coord.y}" r="1.6" fill="#e8eef5" opacity="0.55" />`;
+              return `<circle cx="${t.coord.x}" cy="${t.coord.y}" r="1.0" fill="#e8eef5" opacity="0.35" />`;
             })
             .join("");
         }).join("");
@@ -1794,43 +1832,92 @@ function buildBoardSvg(view) {
       const pts = [origin, ...seq.map((t) => t.coord)];
       const pointsAttr = pts.map((p) => `${p.x},${p.y}`).join(" ");
       const isActive = pendingDiceValue != null;
-      return `<polyline points="${pointsAttr}" fill="none" stroke="${isActive ? "#ffb703" : "#7fd6ff"}" stroke-width="${isActive ? 4.4 : 3.2}" stroke-linecap="round" stroke-linejoin="round" opacity="${isActive ? 0.95 : 0.55}" />`;
+      return `<polyline points="${pointsAttr}" fill="none" stroke="${isActive ? "#ffb703" : "#7fd6ff"}" stroke-width="${isActive ? 3.6 : 2.6}" stroke-linecap="round" stroke-linejoin="round" opacity="${isActive ? 0.95 : 0.6}" />`;
     })
     .join("");
   const landingHtml = landingPoints
-    .map((pt) => `<circle cx="${pt.x}" cy="${pt.y}" r="10" fill="none" stroke="#ffb703" stroke-width="2.2"><animate attributeName="r" values="10;14;10" dur="1s" repeatCount="indefinite" /></circle>`)
+    .map((pt) => `<circle cx="${pt.x}" cy="${pt.y}" r="7.5" fill="none" stroke="#ffb703" stroke-width="1.8"><animate attributeName="r" values="7.5;10.5;7.5" dur="1s" repeatCount="indefinite" /></circle>`)
     .join("");
 
-  // ---- 都市マス：ラベルはLODと重なり回避アルゴリズムで間引く（マーカー自体は常に描画し、タップで確認できる） ----
+  // ---- 都市マス：見た目のサイズは全体的に小さくし（タップ判定は別途worldHitThresholdで確保）、
+  // ラベルは「現在地／進める方向の先／主要都市」以外はLODと重なり回避アルゴリズムで間引く ----
+  const currentCityKey = !state.onLine ? state.currentCity : null;
   const dirOptionCityKeys = new Set(dirOptions.map((o) => o.cityKey).filter(Boolean));
-  const labelCandidates = CITIES.map((city) => {
-    const isCurrent = city.key === state.currentCity && !state.onLine;
-    let priority = 10;
-    if (isCurrent) priority = 100;
-    else if (dirOptionCityKeys.has(city.key)) priority = 90;
-    else if (city.size === "metro") priority = 70;
-    else if (city.size === "hub") priority = 50;
-    return { key: city.key, x: city.coord.x, y: city.coord.y, priority };
+  function cityBadge(st) {
+    return st.isMonopoly ? "👑" : st.hasLandmark ? "🏙️" : st.remain === 1 && st.ownedCount > 0 ? "🔥" : "";
+  }
+  function cityMarkerRadius(city, isCurrent) {
+    if (isCurrent) return 4.4; // 現在地・選択都市：大
+    if (city.size === "metro") return 3.2; // 主要都市：中
+    if (city.size === "hub") return 2.7;
+    return 2.0; // 通常都市：小
+  }
+  function cityPriority(city, isCurrent) {
+    if (isCurrent) return 1000;
+    if (dirOptionCityKeys.has(city.key)) return 900;
+    if (MAJOR_CITY_KEYS.has(city.key)) return 800;
+    if (city.size === "metro") return 700;
+    if (city.size === "hub") return 500;
+    return 100;
+  }
+  function labelEligible(city, isCurrent) {
+    if (isCurrent || dirOptionCityKeys.has(city.key) || MAJOR_CITY_KEYS.has(city.key)) return true; // ズームに関係なく表示
+    if (lod === LOD_FAR) return false;
+    if (lod === LOD_MID) return city.size !== "town"; // 県庁所在地・主要都市を追加表示
+    return true; // LOD_NEAR：すべて表示候補にする
+  }
+
+  const markerObstacles = CITIES.map((city) => {
+    const r = cityMarkerRadius(city, city.key === currentCityKey);
+    return { x: city.coord.x - r, y: city.coord.y - r, w: r * 2, h: r * 2 };
   });
-  const labelPool = lod === LOD_FAR ? labelCandidates.filter((c) => c.priority >= 50) : labelCandidates;
-  const shownLabels = selectVisibleLabels(labelPool, view.scale);
+  // マス目の星・アイコンや海のキャプションにも都市ラベルが重ならないよう、障害物として扱う
+  if (lod !== LOD_FAR) {
+    LINES.forEach((line) => {
+      getLineTiles(line)
+        .filter((t) => t.type !== "city")
+        .forEach((t) => {
+          const r = t.type === "special" ? (lod === LOD_NEAR ? 3 : 1.8) : t.type === "event" ? 2.6 : 1.0;
+          markerObstacles.push({ x: t.coord.x - r, y: t.coord.y - r, w: r * 2, h: r * 2 });
+        });
+    });
+  }
+  const gapCaptionText = "🌊 海（沖縄へは飛行機のみで移動）";
+  const gapCaptionWidth = estimateLabelWidth(gapCaptionText, 8.5);
+  markerObstacles.push({ x: minX + W / 2 - gapCaptionWidth / 2, y: gapY + 12 - 8.5 * 0.85, w: gapCaptionWidth, h: 8.5 * 1.15 });
+  const labelCandidates = CITIES.filter((city) => labelEligible(city, city.key === currentCityKey)).map((city) => {
+    const isCurrent = city.key === currentCityKey;
+    const st = getCityMapState(city);
+    const fontSize = isCurrent ? 9 : 7.5;
+    return {
+      key: city.key,
+      x: city.coord.x,
+      y: city.coord.y,
+      r: cityMarkerRadius(city, isCurrent),
+      text: city.name + cityBadge(st),
+      fontSize,
+      priority: cityPriority(city, isCurrent),
+      forceShow: isCurrent,
+    };
+  });
+  const labelPositions = layoutCityLabels(labelCandidates, markerObstacles);
 
   const dotsHtml = CITIES.map((city) => {
     const st = getCityMapState(city);
     const color = MAP_STATE_COLOR[st.stateClass];
-    const isPlayerHere = st.isCurrent && !state.onLine;
+    const isCurrent = city.key === currentCityKey;
     const junction = isJunctionCity(city.key);
-    const r = isPlayerHere ? 7.5 : city.size === "metro" ? 5.5 : city.size === "hub" ? 4.6 : 3.8;
-    const ring = isPlayerHere
-      ? `<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r + 3}" fill="none" stroke="#ffb703" stroke-width="1.8"><animate attributeName="r" values="${r + 3};${r + 5.5};${r + 3}" dur="1.4s" repeatCount="indefinite" /></circle>`
+    const r = cityMarkerRadius(city, isCurrent);
+    const ring = isCurrent
+      ? `<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r + 2.2}" fill="none" stroke="#ffb703" stroke-width="1.4"><animate attributeName="r" values="${r + 2.2};${r + 4};${r + 2.2}" dur="1.4s" repeatCount="indefinite" /></circle>`
       : "";
-    const badge = st.isMonopoly ? "👑" : st.hasLandmark ? "🏙️" : st.remain === 1 && st.ownedCount > 0 ? "🔥" : "";
-    const label = shownLabels.has(city.key)
-      ? `<text x="${city.coord.x}" y="${city.coord.y - r - 4}" font-size="${isPlayerHere ? 10 : 8}" text-anchor="middle" fill="${isPlayerHere ? "#ffb703" : "#e8eef5"}" font-weight="${isPlayerHere ? "bold" : "normal"}" paint-order="stroke" stroke="#0f2540" stroke-width="2.6">${city.name}${badge}</text>`
+    const pos = labelPositions.get(city.key);
+    const label = pos
+      ? `<text x="${pos.x.toFixed(1)}" y="${pos.y.toFixed(1)}" font-size="${isCurrent ? 9 : 7.5}" text-anchor="middle" fill="${isCurrent ? "#ffb703" : "#e8eef5"}" font-weight="${isCurrent ? "bold" : "normal"}" paint-order="stroke" stroke="#0f2540" stroke-width="2.4">${city.name}${cityBadge(st)}</text>`
       : "";
     const shape = junction
-      ? `<rect x="${city.coord.x - r}" y="${city.coord.y - r}" width="${r * 2}" height="${r * 2}" rx="2.6" fill="${color}" stroke="#0f2540" stroke-width="1.3" transform="rotate(45 ${city.coord.x} ${city.coord.y})" />`
-      : `<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r}" fill="${color}" stroke="#0f2540" stroke-width="1.1" />`;
+      ? `<rect x="${city.coord.x - r}" y="${city.coord.y - r}" width="${r * 2}" height="${r * 2}" rx="1.6" fill="${color}" stroke="#0f2540" stroke-width="1" transform="rotate(45 ${city.coord.x} ${city.coord.y})" />`
+      : `<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r}" fill="${color}" stroke="#0f2540" stroke-width="0.9" />`;
     return `<g>${ring}${shape}${label}</g>`;
   }).join("");
 
@@ -1849,9 +1936,9 @@ function buildBoardSvg(view) {
     if (tiles[idx]) tokenCoord = tiles[idx].coord;
   }
   const tokenHtml = `<g>
-    <circle cx="${tokenCoord.x}" cy="${tokenCoord.y}" r="9" fill="none" stroke="#ffb703" stroke-width="1.8"><animate attributeName="r" values="9;12.5;9" dur="1.3s" repeatCount="indefinite" /></circle>
-    <circle cx="${tokenCoord.x}" cy="${tokenCoord.y}" r="6.5" fill="#ffb703" stroke="#0f2540" stroke-width="1.3" />
-    <text x="${tokenCoord.x}" y="${tokenCoord.y + 2.6}" font-size="8" text-anchor="middle">🚩</text>
+    <circle cx="${tokenCoord.x}" cy="${tokenCoord.y}" r="6.2" fill="none" stroke="#ffb703" stroke-width="1.4"><animate attributeName="r" values="6.2;8;6.2" dur="1.3s" repeatCount="indefinite" /></circle>
+    <circle cx="${tokenCoord.x}" cy="${tokenCoord.y}" r="4.3" fill="#ffb703" stroke="#0f2540" stroke-width="1" />
+    <text x="${tokenCoord.x}" y="${tokenCoord.y + 1.7}" font-size="5.2" text-anchor="middle">🚩</text>
   </g>`;
 
   const canvasW = Math.round(W * MAP_PX_PER_UNIT);
@@ -2300,7 +2387,6 @@ function initRefs() {
   routeProgressEl = document.getElementById("routeProgress");
 
   diceFace = document.getElementById("diceFace");
-  diceHintEl = document.getElementById("diceHint");
   mainBoardViewport = document.getElementById("mainBoardViewport");
   mainBoardCanvas = document.getElementById("mainBoardCanvas");
 

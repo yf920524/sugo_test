@@ -71,13 +71,15 @@
     <div id="controlArea">
       <div id="mainBoardViewport" class="board-viewport main-board">
         <div id="mainBoardCanvas" class="board-canvas"></div>
-        <div id="diceHint" class="board-hint">🎲 タップしてサイコロを振ろう！</div>
         <div class="board-zoom-controls">
           <button id="boardZoomOutBtn" class="board-zoom-btn">－</button>
           <button id="boardZoomInBtn" class="board-zoom-btn">＋</button>
           <button id="boardGotoCurrentBtn" class="board-zoom-btn wide">📍現在地へ</button>
         </div>
-        <button id="diceFace" class="dice-fab">🎲</button>
+        <div class="dice-fab-wrap">
+          <button id="diceFace" class="dice-fab">🎲</button>
+          <span class="dice-fab-label">サイコロ</span>
+        </div>
       </div>
     </div>
 
