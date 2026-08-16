@@ -29,7 +29,7 @@ let startScreen, gameScreen, continueBtn, newGameBtn;
 let statYear, statMonth, victoryBadge, menuBtn, statAnnualRevenue, goalBarFill;
 let statCash, statAssets, statProps, statMonopoly;
 let cityIcon, cityName, cityCatch, cityRegionBadge, routeProgressEl;
-let diceFace, diceHintEl, directionButtons;
+let diceFace, diceHintEl, mainBoardViewport, mainBoardCanvas;
 let shopBtn, mapBtn, collectionBtn, logBtn;
 let modalRoot, modalBox;
 
@@ -416,7 +416,7 @@ async function movePlayerAlongTiles(lineKey, dir, steps) {
 function renderTileStepProgress(tile, line, dir, stepNum, totalSteps) {
   renderHeader();
   animatingMove = { lineKey: line.key, dir, stepIndex: stepNum };
-  renderDirectionButtons();
+  renderMainBoard();
   if (routeProgressEl) {
     routeProgressEl.classList.remove("hidden");
     routeProgressEl.textContent = `🚶 ${line.name} 移動中… (${stepNum}/${totalSteps}マス)`;
@@ -448,7 +448,7 @@ function rollDiceOnly() {
       addLog(`🎲 ${value}が出た！進む方向を選ぼう`);
       pendingDiceValue = value;
       updateDiceHint();
-      renderDirectionButtons();
+      renderMainBoard();
     }
   }, 70);
 }
@@ -560,161 +560,84 @@ function getDirectionOptions() {
   return { originCoord, options };
 }
 
-// 1マスぶんのマーカー（都市／分岐点／通常／イベント／特殊）を描く
-function buildTileMarkerSvg(t, cx, cy, r) {
-  if (t.type === "city") {
-    const c = getCity(t.cityKey);
-    const st = getCityMapState(c);
-    const color = MAP_STATE_COLOR[st.stateClass];
-    const junction = isJunctionCity(c.key);
-    const shape = junction
-      ? `<rect x="${cx - r}" y="${cy - r}" width="${r * 2}" height="${r * 2}" rx="2.2" fill="${color}" stroke="#0f2540" stroke-width="1.3" transform="rotate(45 ${cx} ${cy})" />`
-      : `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${color}" stroke="#0f2540" stroke-width="1.2" />`;
-    const label = `<text x="${cx}" y="${cy - r - 4}" font-size="9" text-anchor="middle" fill="#e8eef5" font-weight="bold" paint-order="stroke" stroke="#0f2540" stroke-width="2.5">${c.name}</text>`;
-    return `${shape}<text x="${cx}" y="${cy + r * 0.35}" font-size="${r}" text-anchor="middle">${c.icon}</text>${label}`;
-  }
-  if (t.type === "event") {
-    const s = (r * 1.15) / 3;
-    return `<path transform="translate(${cx},${cy}) scale(${s})" d="M0,-3 L0.9,-0.9 L3,-0.9 L1.3,0.5 L1.9,2.6 L0,1.3 L-1.9,2.6 L-1.3,0.5 L-3,-0.9 L-0.9,-0.9 Z" fill="#ffd166" stroke="#7a5200" stroke-width="0.6" />`;
-  }
-  if (t.type === "special") {
-    return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#3a2c14" stroke="#ffb703" stroke-width="1.2" />`;
-  }
-  return `<circle cx="${cx}" cy="${cy}" r="${r * 0.45}" fill="#e8eef5" opacity="0.65" />`;
-}
-
-// 移動アニメーション中だけ設定される、今表示すべき進行方向とマス位置（現在の実座標ではなく盤面上の位置）
+// 移動アニメーション中だけ設定される、今表示すべき進行方向とマス位置（tiles配列上のインデックス由来）
 let animatingMove = null; // { lineKey, dir, stepIndex }
 
-const LOCAL_TILE_MIN = 12; // 1マスの最小表示間隔（近すぎる都市同士のラベルが重ならないための下限）
-const LOCAL_TILE_MAX = 20; // 1マスの最大表示間隔（遠い都市で盤面が間延びしすぎないための上限）
-const LOCAL_MAX_VISIBLE = 6; // サイコロの最大目に合わせ、1画面に6マス先まで見せる
-
-// 現在地からの本当の方角（ベアリング）はそのまま保ちつつ、マス間隔だけ一定範囲に収めて描画する。
-// 実距離そのままだと関東など密集地のラベルが重なり、逆に長距離路線だと盤面が間延びしてしまうため。
-function projectLocalPoint(originCoord, coord, stepIndex) {
-  const dx = coord.x - originCoord.x;
-  const dy = coord.y - originCoord.y;
-  const realDist = Math.hypot(dx, dy) || 0.0001;
-  const renderDist = Math.min(Math.max(realDist, stepIndex * LOCAL_TILE_MIN), stepIndex * LOCAL_TILE_MAX);
-  const scale = renderDist / realDist;
-  return { x: dx * scale, y: dy * scale };
-}
-
-// 到着予定の都市からさらに先へ進むと何があるか（次の分岐先）を一言プレビューする。
-// マスの上限は6だが都市間の区間は最大でも6マス以内に収まる設計のため、
-// 「その先」は主にこの＝到着都市のさらに先の分岐先プレビューで示す。
-function getBeyondPreviewNames(cityKey) {
-  const backKey = state.onLine ? null : state.currentCity;
-  return getNeighbors(cityKey)
-    .filter((n) => n.cityKey !== backKey)
-    .slice(0, 2)
-    .map((n) => getCity(n.cityKey).name);
-}
-
-// メイン画面用：現在地を中心に、実際の方角のまま近隣路線をたどる「地図ベースのローカルすごろく盤」。
-// 全国マップ（buildMapSvg）と同じマス・都市の見た目を使うので、ズームインした状態として見える。
-// サイコロは振ってから方向を選ぶ操作順（桃鉄式）：pendingDiceValue が立っている間だけ着地マスを光らせる。
-function buildLocalBoardSvg() {
-  const { originCoord, options } = getDirectionOptions();
-
-  const rendered = options.map((opt) => {
-    const fullSeq = getTileSequenceToCity(opt.tiles, opt.fromIdx, opt.dir);
-    const visible = fullSeq.slice(0, LOCAL_MAX_VISIBLE);
-    const pts = [{ x: 0, y: 0 }];
-    visible.forEach((t, i) => pts.push(projectLocalPoint(originCoord, t.coord, i + 1)));
-    let beyond = null;
-    if (fullSeq.length > LOCAL_MAX_VISIBLE) {
-      const last = pts[pts.length - 1];
-      const ang = Math.atan2(last.y, last.x);
-      const dist = LOCAL_MAX_VISIBLE * LOCAL_TILE_MIN + LOCAL_TILE_MIN * 0.85;
-      const destCity = getCity(fullSeq[fullSeq.length - 1].cityKey);
-      beyond = { x: Math.cos(ang) * dist, y: Math.sin(ang) * dist, cityName: destCity.name, cityIcon: destCity.icon, remain: fullSeq.length - LOCAL_MAX_VISIBLE };
-    }
-    return { ...opt, visible, pts, beyond };
-  });
-
-  let half = LOCAL_MAX_VISIBLE * LOCAL_TILE_MIN * 0.6 + 30;
-  rendered.forEach((opt) => {
-    opt.pts.forEach((p) => { half = Math.max(half, Math.abs(p.x) + 26, Math.abs(p.y) + 26); });
-    if (opt.beyond) half = Math.max(half, Math.abs(opt.beyond.x) + 34, Math.abs(opt.beyond.y) + 18);
-    const lastTile = opt.visible[opt.visible.length - 1];
-    if (!opt.beyond && lastTile && lastTile.type === "city") {
-      const lastPt = opt.pts[opt.pts.length - 1];
-      half = Math.max(half, Math.abs(lastPt.x) + 26, Math.abs(lastPt.y) + 30);
-    }
-  });
-
-  const landingStep = pendingDiceValue; // 振った後だけ、その歩数目のマスを着地マスとして光らせる
-
-  const pathsHtml = rendered
-    .map((opt) => {
-      const pointsAttr = opt.pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
-      const markers = opt.visible
-        .map((t, i) => {
-          const p = opt.pts[i + 1];
-          const r = t.type === "city" ? 9 : 4.2;
-          const isLanding = landingStep != null && landingStep === i + 1;
-          const ring = isLanding
-            ? `<circle cx="${p.x}" cy="${p.y}" r="${r + 5}" fill="none" stroke="#ffb703" stroke-width="2"><animate attributeName="r" values="${r + 5};${r + 8};${r + 5}" dur="1s" repeatCount="indefinite" /></circle>`
-            : "";
-          let preview = "";
-          if (!opt.beyond && i === opt.visible.length - 1 && t.type === "city") {
-            const names = getBeyondPreviewNames(t.cityKey);
-            if (names.length) {
-              preview = `<text x="${p.x}" y="${p.y + r + 13}" font-size="7.5" text-anchor="middle" fill="#7d93ac" paint-order="stroke" stroke="#0f2540" stroke-width="2">→${names.join("・")}</text>`;
-            }
-          }
-          return `${ring}${buildTileMarkerSvg(t, p.x, p.y, r)}${preview}`;
-        })
-        .join("");
-      const beyondHtml = opt.beyond
-        ? `<g opacity="0.85">
-            <line x1="${opt.pts[opt.pts.length - 1].x.toFixed(1)}" y1="${opt.pts[opt.pts.length - 1].y.toFixed(1)}" x2="${opt.beyond.x.toFixed(1)}" y2="${opt.beyond.y.toFixed(1)}" stroke="${PATH_COLOR}" stroke-width="2" stroke-dasharray="2,3" opacity="0.7" />
-            <text x="${opt.beyond.x.toFixed(1)}" y="${opt.beyond.y.toFixed(1)}" font-size="8.5" text-anchor="middle" fill="#a9bdd4" paint-order="stroke" stroke="#0f2540" stroke-width="2.5">➡️あと${opt.beyond.remain}で${opt.beyond.cityIcon}${opt.beyond.cityName}</text>
-          </g>`
-        : "";
-      return `<g class="local-dir-group" data-line-key="${opt.lineKey}" data-dir="${opt.dir}">
-        <polyline points="${pointsAttr}" fill="none" stroke="transparent" stroke-width="22" stroke-linecap="round" />
-        <polyline points="${pointsAttr}" fill="none" stroke="${PATH_COLOR}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9" />
-        ${markers}
-        ${beyondHtml}
-      </g>`;
-    })
-    .join("");
-
-  let tokenPt = { x: 0, y: 0 };
-  if (animatingMove) {
-    const match = rendered.find((o) => o.lineKey === animatingMove.lineKey && o.dir === animatingMove.dir);
-    if (match && match.pts[animatingMove.stepIndex]) tokenPt = match.pts[animatingMove.stepIndex];
+// 実際の移動（movePlayerAlongTiles）と同じ規則でtiles配列の範囲にクランプしながら、
+// fromIdxからdir方向へsteps歩ぶんのマス列を返す。ハイライトする「着地マス」の算出に使う。
+function getStepSequence(tiles, fromIdx, dir, steps) {
+  const targetIdx = Math.min(tiles.length - 1, Math.max(0, fromIdx + dir * steps));
+  const seq = [];
+  let cur = fromIdx;
+  while (cur !== targetIdx) {
+    cur += dir;
+    seq.push(tiles[cur]);
   }
-  const originHtml = `<g class="local-origin">
-    <circle cx="${tokenPt.x}" cy="${tokenPt.y}" r="10" fill="none" stroke="#ffb703" stroke-width="1.8"><animate attributeName="r" values="10;13;10" dur="1.3s" repeatCount="indefinite" /></circle>
-    <circle cx="${tokenPt.x}" cy="${tokenPt.y}" r="7.5" fill="#ffb703" stroke="#0f2540" stroke-width="1.3" />
-    <text x="${tokenPt.x}" y="${tokenPt.y + 2.8}" font-size="8.5" text-anchor="middle">🚩</text>
-  </g>`;
-
-  const compassHtml = `<g class="local-compass" opacity="0.35" font-size="9" fill="#a9bdd4" text-anchor="middle">
-    <text x="0" y="${(-half + 12).toFixed(1)}">北</text>
-    <text x="0" y="${(half - 5).toFixed(1)}">南</text>
-    <text x="${(half - 10).toFixed(1)}" y="4">東</text>
-    <text x="${(-half + 10).toFixed(1)}" y="4">西</text>
-  </g>`;
-
-  return `<svg viewBox="${-half} ${-half} ${half * 2} ${half * 2}" class="local-board-svg" xmlns="http://www.w3.org/2000/svg">
-    ${compassHtml}
-    ${pathsHtml}
-    ${originHtml}
-  </svg>`;
+  return seq;
 }
 
-function renderDirectionButtons() {
-  if (!directionButtons) return;
-  // controls-disabled は setControlsEnabled() が管理する状態なので、再描画のたびに消してしまわないよう保持する
-  const wasDisabled = directionButtons.classList.contains("controls-disabled");
-  directionButtons.className = "direction-buttons local-board-wrap" + (wasDisabled ? " controls-disabled" : "");
-  const stageClass = pendingDiceValue == null ? "awaiting-roll" : "ready-to-move";
-  directionButtons.innerHTML = `<div class="local-board-viewport ${stageClass}">${buildLocalBoardSvg()}</div>`;
+// ============================================================
+// メイン盤面（プレイ中の画面）：日本地図上に固定された盤面をパン・ズームしながら遊ぶ。
+// buildBoardSvg(mainBoardView) が現在地・分岐ハイライト・着地マスを描き、
+// タップ判定はSVG要素ではなくワールド座標での距離計算で行う（ズームしても押しやすさが変わらないように）。
+// ============================================================
+let mainBoardView = { scale: 1, tx: 0, ty: 0, mode: "main" };
+let mainLastTapWorld = null;
+
+function renderMainBoard() {
+  if (!mainBoardCanvas) return;
+  mainBoardCanvas.innerHTML = buildBoardSvg(mainBoardView);
+  applyBoardTransform(mainBoardView, mainBoardCanvas);
+}
+// 現在地を中心に据える。ターン開始時（自分の手番が来たとき）にだけ呼び、
+// プレイヤーが手番中に自由にパン・ズームした結果を勝手に上書きしないようにする。
+function centerMainBoardOnCurrent() {
+  if (!mainBoardViewport) return;
+  const vw = mainBoardViewport.clientWidth, vh = mainBoardViewport.clientHeight;
+  if (vw && vh) {
+    const pos = getCurrentMapWorldCoord();
+    centerBoardViewOn(mainBoardView, mainBoardViewport, pos.x, pos.y, Math.max(mainBoardView.scale, 2.2));
+  } else {
+    // まだレイアウト確定前（初回表示直後など）。次のフレームで正しいサイズが取れてから再試行する。
+    requestAnimationFrame(centerMainBoardOnCurrent);
+  }
+  renderMainBoard();
+}
+function initMainBoard() {
+  if (!mainBoardViewport || !mainBoardCanvas) return;
+  wireBoardGestures(mainBoardView, mainBoardViewport, mainBoardCanvas, {
+    onTap: (x, y) => {
+      mainLastTapWorld = { x, y };
+      handleMainBoardTap(x, y);
+    },
+    onSettle: renderMainBoard,
+  });
+}
+// タップ位置（ワールド座標）を、ハイライト中の進行方向→都市マーカーの順で判定する。
+function handleMainBoardTap(worldX, worldY) {
+  if (mainBoardViewport && mainBoardViewport.classList.contains("controls-disabled")) return;
+  if (pendingDiceValue != null) {
+    const { options } = getDirectionOptions();
+    const threshold = worldHitThreshold(mainBoardView, 26);
+    let best = null;
+    options.forEach((opt) => {
+      const seq = getTileSequenceToCity(opt.tiles, opt.fromIdx, opt.dir);
+      const origin = opt.tiles[opt.fromIdx].coord;
+      const pts = [origin, ...seq.map((t) => t.coord)];
+      const d = distToPolyline(worldX, worldY, pts);
+      if (d <= threshold && (!best || d < best.d)) best = { opt, d };
+    });
+    if (best) {
+      const steps = pendingDiceValue;
+      pendingDiceValue = null;
+      if (diceFace) diceFace.classList.remove("dice-used");
+      setControlsEnabled(false);
+      movePlayerAlongTiles(best.opt.lineKey, best.opt.dir, steps);
+      return;
+    }
+  }
+  const city = findNearestCity(worldX, worldY, worldHitThreshold(mainBoardView, 24));
+  if (city) showCityInfoSheet(city.key);
 }
 
 function renderCityDisplayOnly() {
@@ -746,7 +669,8 @@ function renderCityPanel() {
     diceFace.classList.remove("dice-used");
   }
   updateDiceHint();
-  renderDirectionButtons();
+  // 自分の手番が来たタイミングでだけ現在地へ視点を戻す（手番中の自由なパン・ズームは尊重する）
+  centerMainBoardOnCurrent();
 }
 
 // ============================================================
@@ -771,7 +695,7 @@ function closeModal() {
   if (cb) cb();
 }
 function setControlsEnabled(enabled) {
-  if (directionButtons) directionButtons.classList.toggle("controls-disabled", !enabled);
+  if (mainBoardViewport) mainBoardViewport.classList.toggle("controls-disabled", !enabled);
   if (diceFace) diceFace.classList.toggle("dice-disabled", !enabled);
   shopBtn.disabled = !enabled;
   mapBtn.disabled = !enabled;
@@ -1554,51 +1478,57 @@ function showLogModal() {
   setAfterClose(null);
 }
 
-function showMapModal() {
-  setModalContent(buildMapHtml());
-  setAfterClose(null);
-  requestAnimationFrame(() => {
-    wireMapGestures();
-    mapFitAll();
-  });
-}
-
 // ============================================================
-// 全国マップのズーム／パン操作（ピンチ・ドラッグ・ボタン）
+// 盤面のパン・ズーム共通エンジン（メイン盤面・全国マップ共通で使う）
+// ピンチ／＋－ボタンとも「今見ている盤面上の地点」を中心にズームする
+// （一般的な地図アプリと同じ操作感：つまんだ場所の下の地図がそのまま拡大される）
 // ============================================================
-let mapView = { scale: 1, tx: 0, ty: 0 };
-const MAP_SCALE_MIN = 0.3;
-const MAP_SCALE_MAX = 4;
-let mapPointers = new Map();
-let mapDragLast = null;
-let mapPinchStartDist = null;
-let mapPinchStartScale = 1;
+const BOARD_SCALE_MIN = 0.28;
+const BOARD_SCALE_MAX = 4.5;
 
-function clampMapScale(s) {
-  return Math.min(MAP_SCALE_MAX, Math.max(MAP_SCALE_MIN, s));
+function clampBoardScale(s) {
+  return Math.min(BOARD_SCALE_MAX, Math.max(BOARD_SCALE_MIN, s));
 }
-function applyMapTransform() {
-  const canvas = document.getElementById("mapCanvas");
-  if (canvas) canvas.style.transform = `translate(${mapView.tx}px, ${mapView.ty}px) scale(${mapView.scale})`;
-}
-function mapWorldToCanvasPx(x, y) {
+function worldToCanvasPx(x, y) {
   return { x: (x - MAP_VIEWBOX.minX) * MAP_PX_PER_UNIT, y: (y - MAP_VIEWBOX.minY) * MAP_PX_PER_UNIT };
 }
-function mapZoom(factor) {
-  mapView.scale = clampMapScale(mapView.scale * factor);
-  applyMapTransform();
+function canvasPxToWorld(px, py) {
+  return { x: px / MAP_PX_PER_UNIT + MAP_VIEWBOX.minX, y: py / MAP_PX_PER_UNIT + MAP_VIEWBOX.minY };
 }
-function mapFitAll() {
-  const viewport = document.getElementById("mapViewport");
-  if (!viewport) return;
-  const vw = viewport.clientWidth, vh = viewport.clientHeight;
+function applyBoardTransform(view, canvasEl) {
+  if (canvasEl) canvasEl.style.transform = `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`;
+}
+// ビューポート内ローカル座標(px,py)の位置に、ズーム後も同じ盤面地点が残るよう tx/ty を補正する
+function zoomKeepingViewportPointFixed(view, px, py, newScale) {
+  const canvasX = (px - view.tx) / view.scale;
+  const canvasY = (py - view.ty) / view.scale;
+  view.scale = clampBoardScale(newScale);
+  view.tx = px - canvasX * view.scale;
+  view.ty = py - canvasY * view.scale;
+}
+// 盤面上のワールド座標を中心にズームする（＋／－ボタン用）。
+// 今その地点が画面上のどこに見えているかを求めてから、ズーム後も同じ画面位置に残るよう補正する。
+function zoomAroundWorldPoint(view, worldX, worldY, newScale) {
+  const c = worldToCanvasPx(worldX, worldY);
+  const px = c.x * view.scale + view.tx;
+  const py = c.y * view.scale + view.ty;
+  zoomKeepingViewportPointFixed(view, px, py, newScale);
+}
+function fitBoardView(view, viewportEl) {
+  const vw = viewportEl.clientWidth, vh = viewportEl.clientHeight;
   const canvasW = MAP_VIEWBOX.w * MAP_PX_PER_UNIT, canvasH = MAP_VIEWBOX.h * MAP_PX_PER_UNIT;
   if (!vw || !vh) return;
-  const scale = clampMapScale(Math.min(vw / canvasW, vh / canvasH) * 0.96);
-  mapView.scale = scale;
-  mapView.tx = (vw - canvasW * scale) / 2;
-  mapView.ty = (vh - canvasH * scale) / 2;
-  applyMapTransform();
+  const scale = clampBoardScale(Math.min(vw / canvasW, vh / canvasH) * 0.96);
+  view.scale = scale;
+  view.tx = (vw - canvasW * scale) / 2;
+  view.ty = (vh - canvasH * scale) / 2;
+}
+function centerBoardViewOn(view, viewportEl, worldX, worldY, scale) {
+  const vw = viewportEl.clientWidth, vh = viewportEl.clientHeight;
+  const target = worldToCanvasPx(worldX, worldY);
+  view.scale = clampBoardScale(scale);
+  view.tx = vw / 2 - target.x * view.scale;
+  view.ty = vh / 2 - target.y * view.scale;
 }
 function getCurrentMapWorldCoord() {
   if (state.onLine) {
@@ -1608,69 +1538,136 @@ function getCurrentMapWorldCoord() {
   }
   return getCity(state.currentCity).coord;
 }
-function mapGotoCurrent() {
-  const viewport = document.getElementById("mapViewport");
-  if (!viewport) return;
-  const vw = viewport.clientWidth, vh = viewport.clientHeight;
-  const pos = getCurrentMapWorldCoord();
-  const target = mapWorldToCanvasPx(pos.x, pos.y);
-  const scale = clampMapScale(2.2);
-  mapView.scale = scale;
-  mapView.tx = vw / 2 - target.x * scale;
-  mapView.ty = vh / 2 - target.y * scale;
-  applyMapTransform();
+// ＋／－ボタンでのズーム。直前にタップした盤面地点（なければ現在地）を中心にする。
+function zoomButton(view, viewportEl, canvasEl, factor, anchorWorld, renderFn) {
+  const anchor = anchorWorld || getCurrentMapWorldCoord();
+  zoomAroundWorldPoint(view, anchor.x, anchor.y, view.scale * factor);
+  applyBoardTransform(view, canvasEl);
+  if (renderFn) renderFn();
 }
-function wireMapGestures() {
-  const viewport = document.getElementById("mapViewport");
-  if (!viewport) return;
-  mapPointers = new Map();
-  mapDragLast = null;
-  mapPinchStartDist = null;
-  viewport.addEventListener("pointerdown", (e) => {
+
+// ドラッグでパン、ピンチは「つまんだ指の中点」を中心にズーム、短いタップは onTap(worldX,worldY) を呼ぶ。
+// SVG側の要素には当たり判定を持たせず、タップ位置→盤面ワールド座標への変換だけをここで一元的に行う。
+function wireBoardGestures(view, viewportEl, canvasEl, opts) {
+  const pointers = new Map();
+  let dragLast = null;
+  let pinchDist = null;
+  let downInfo = null;
+  const TAP_MAX_MOVE = 9;
+  const TAP_MAX_MS = 450;
+
+  viewportEl.addEventListener("pointerdown", (e) => {
+    // サイコロ・ズームボタンなど盤面の上に重ねた操作用パーツは、盤面ジェスチャーに巻き込まない
+    if (e.target.closest(".dice-fab, .board-zoom-btn")) return;
     try {
-      viewport.setPointerCapture(e.pointerId);
+      viewportEl.setPointerCapture(e.pointerId);
     } catch (err) {
       // 一部の環境（テスト用の合成イベント等）ではキャプチャが失敗することがあるが、
       // ポインター追跡自体は継続できるので無視してよい
     }
-    mapPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (mapPointers.size === 1) {
-      mapDragLast = { x: e.clientX, y: e.clientY };
-    } else if (mapPointers.size === 2) {
-      const pts = [...mapPointers.values()];
-      mapPinchStartDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
-      mapPinchStartScale = mapView.scale;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 1) {
+      dragLast = { x: e.clientX, y: e.clientY };
+      downInfo = { x: e.clientX, y: e.clientY, t: Date.now() };
+    } else if (pointers.size === 2) {
+      downInfo = null; // 2本指になったらタップ判定はしない
+      const pts = [...pointers.values()];
+      pinchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
     }
   });
-  viewport.addEventListener("pointermove", (e) => {
-    if (!mapPointers.has(e.pointerId)) return;
-    mapPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (mapPointers.size === 1 && mapDragLast) {
-      const dx = e.clientX - mapDragLast.x;
-      const dy = e.clientY - mapDragLast.y;
-      mapView.tx += dx;
-      mapView.ty += dy;
-      mapDragLast = { x: e.clientX, y: e.clientY };
-      applyMapTransform();
-    } else if (mapPointers.size === 2 && mapPinchStartDist) {
-      const pts = [...mapPointers.values()];
+  viewportEl.addEventListener("pointermove", (e) => {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 1 && dragLast) {
+      const dx = e.clientX - dragLast.x;
+      const dy = e.clientY - dragLast.y;
+      view.tx += dx;
+      view.ty += dy;
+      dragLast = { x: e.clientX, y: e.clientY };
+      if (downInfo && Math.hypot(e.clientX - downInfo.x, e.clientY - downInfo.y) > TAP_MAX_MOVE) downInfo = null;
+      applyBoardTransform(view, canvasEl);
+    } else if (pointers.size === 2 && pinchDist) {
+      const pts = [...pointers.values()];
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
-      mapView.scale = clampMapScale(mapPinchStartScale * (dist / mapPinchStartDist));
-      applyMapTransform();
+      const rect = viewportEl.getBoundingClientRect();
+      const midX = (pts[0].x + pts[1].x) / 2 - rect.left;
+      const midY = (pts[0].y + pts[1].y) / 2 - rect.top;
+      const newScale = clampBoardScale(view.scale * (dist / pinchDist));
+      zoomKeepingViewportPointFixed(view, midX, midY, newScale);
+      pinchDist = dist; // 基準を毎回更新し、指の動きに追従して連続的にズームさせる
+      applyBoardTransform(view, canvasEl);
     }
   });
   const endPointer = (e) => {
-    mapPointers.delete(e.pointerId);
-    if (mapPointers.size < 2) mapPinchStartDist = null;
-    if (mapPointers.size === 0) mapDragLast = null;
-    else {
-      const [only] = [...mapPointers.values()];
-      mapDragLast = only;
+    const wasPinch = pointers.size >= 2;
+    if (pointers.size === 1 && downInfo && Date.now() - downInfo.t < TAP_MAX_MS) {
+      const rect = viewportEl.getBoundingClientRect();
+      const px = downInfo.x - rect.left, py = downInfo.y - rect.top;
+      const canvasX = (px - view.tx) / view.scale, canvasY = (py - view.ty) / view.scale;
+      const world = canvasPxToWorld(canvasX, canvasY);
+      if (opts.onTap) opts.onTap(world.x, world.y);
+    }
+    pointers.delete(e.pointerId);
+    downInfo = null;
+    if (pointers.size < 2) pinchDist = null;
+    if (pointers.size === 0) {
+      dragLast = null;
+      if (opts.onSettle) opts.onSettle();
+    } else {
+      const [only] = [...pointers.values()];
+      dragLast = only;
+      if (wasPinch && opts.onSettle) opts.onSettle();
     }
   };
-  viewport.addEventListener("pointerup", endPointer);
-  viewport.addEventListener("pointercancel", endPointer);
-  viewport.addEventListener("pointerleave", endPointer);
+  viewportEl.addEventListener("pointerup", endPointer);
+  viewportEl.addEventListener("pointercancel", endPointer);
+  viewportEl.addEventListener("pointerleave", endPointer);
+}
+
+// ============================================================
+// LOD（ズーム倍率に応じた表示レベル）とラベルの重なり回避
+// ============================================================
+const LOD_FAR = 0, LOD_MID = 1, LOD_NEAR = 2;
+function getLod(scale) {
+  if (scale < 0.85) return LOD_FAR;
+  if (scale < 1.9) return LOD_MID;
+  return LOD_NEAR;
+}
+const MIN_LABEL_PX = 30; // ラベル同士がこの画面ピクセル距離より近ければ、優先度の低い方を隠す
+// candidates: [{key,x,y,priority}]。優先度の高い順に置いていき、既に置いたラベルに近すぎるものは非表示にする。
+// 非表示でもマーカー自体は常に描画されるので、タップすれば個別に確認できる。
+function selectVisibleLabels(candidates, scale) {
+  const minDistWorld = MIN_LABEL_PX / (scale * MAP_PX_PER_UNIT);
+  const sorted = [...candidates].sort((a, b) => b.priority - a.priority);
+  const placed = [];
+  const shown = new Set();
+  sorted.forEach((c) => {
+    const tooClose = placed.some((p) => Math.hypot(p.x - c.x, p.y - c.y) < minDistWorld);
+    if (!tooClose) {
+      placed.push(c);
+      shown.add(c.key);
+    }
+  });
+  return shown;
+}
+function distToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq > 0 ? ((px - ax) * dx + (py - ay) * dy) / lenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+function distToPolyline(px, py, pts) {
+  let min = Infinity;
+  for (let i = 0; i < pts.length - 1; i++) {
+    min = Math.min(min, distToSegment(px, py, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y));
+  }
+  return min;
+}
+// 画面ピクセル距離のしきい値を、今のズーム倍率でのワールド座標距離に変換する
+// （タップ判定の広さを、拡大縮小してもスマホで押しやすい一定の大きさに保つため）
+function worldHitThreshold(view, screenPx) {
+  return screenPx / (view.scale * MAP_PX_PER_UNIT);
 }
 
 // ---- 都市の地図上の状態（色分け）判定。マップ全体・SVGどちらからも使う ----
@@ -1726,8 +1723,15 @@ function isJunctionCity(cityKey) {
   return getNeighbors(cityKey).length > 2;
 }
 
-function buildMapSvg() {
+// 日本地図上に固定された都市・マス・街道を描く共通レンダラー。
+// mode:"main"（プレイ中のメイン盤面：現在地・進める方向のハイライト・タップ移動あり）
+//     |"strategic"（全国マップ：閲覧専用、都市をタップすると詳細シートを開く）
+// 現在地によって配置が変わることは絶対にない。ズーム倍率（LOD）に応じて表示する情報量だけを切り替える。
+function buildBoardSvg(view) {
   const { minX, minY, w: W, h: H } = MAP_VIEWBOX;
+  const lod = getLod(view.scale);
+  const isMain = view.mode === "main";
+
   const silhouettes = Object.entries(LANDMASS_OUTLINES)
     .map(([key, pts]) => `<path d="${smoothClosedPath(pts)}" fill="#284a68" stroke="#3a688f" stroke-width="1" opacity="0.9" />`)
     .join("");
@@ -1739,62 +1743,116 @@ function buildMapSvg() {
     const width = line.special ? 2.6 : 1.8;
     const pts = line.cities.map((ck) => getCity(ck).coord);
     const pointsAttr = pts.map((p) => `${p.x},${p.y}`).join(" ");
-    return `<polyline points="${pointsAttr}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" opacity="0.75" />`;
+    return `<polyline points="${pointsAttr}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" opacity="0.7" />`;
   }).join("");
 
-  // マス目：通常マス（小さい丸）／イベントマス（星）／特殊マス（アイコン）。都市マスは別レイヤーで描く。
-  const tileMarksHtml = LINES.map((line) => {
-    const tiles = getLineTiles(line);
-    return tiles
-      .filter((t) => t.type !== "city")
-      .map((t) => {
-        if (t.type === "special") {
-          return `<g><circle cx="${t.coord.x}" cy="${t.coord.y}" r="4.2" fill="#3a2c14" stroke="${SPECIAL_PATH_COLOR}" stroke-width="1" /><text x="${t.coord.x}" y="${t.coord.y + 2.6}" font-size="6.5" text-anchor="middle">${SPECIAL_ICON[line.special] || "★"}</text></g>`;
-        }
-        if (t.type === "event") {
-          return `<path transform="translate(${t.coord.x},${t.coord.y})" d="M0,-3.2 L1,-1 L3.2,-1 L1.4,0.5 L2,2.8 L0,1.4 L-2,2.8 L-1.4,0.5 L-3.2,-1 L-1,-1 Z" fill="#ffd166" stroke="#7a5200" stroke-width="0.5" />`;
-        }
-        return `<circle cx="${t.coord.x}" cy="${t.coord.y}" r="1.6" fill="#e8eef5" opacity="0.55" />`;
-      })
-      .join("");
-  }).join("");
+  // マス目（通常マス・イベントマス・特殊マス）：都市間を実際に数えられるように1マスずつ描く。
+  // 縮小時（LOD_FAR）は街道の見通しを優先し、マスの粒は省く。
+  const tileMarksHtml =
+    lod === LOD_FAR
+      ? ""
+      : LINES.map((line) => {
+          const tiles = getLineTiles(line);
+          return tiles
+            .filter((t) => t.type !== "city")
+            .map((t) => {
+              if (t.type === "special") {
+                return lod === LOD_NEAR
+                  ? `<g><circle cx="${t.coord.x}" cy="${t.coord.y}" r="4.2" fill="#3a2c14" stroke="${SPECIAL_PATH_COLOR}" stroke-width="1" /><text x="${t.coord.x}" y="${t.coord.y + 2.6}" font-size="6.5" text-anchor="middle">${SPECIAL_ICON[line.special] || "★"}</text></g>`
+                  : `<circle cx="${t.coord.x}" cy="${t.coord.y}" r="2.6" fill="#3a2c14" stroke="${SPECIAL_PATH_COLOR}" stroke-width="1" />`;
+              }
+              if (t.type === "event") {
+                const s = lod === LOD_NEAR ? 1 : 0.75;
+                return `<path transform="translate(${t.coord.x},${t.coord.y}) scale(${s})" d="M0,-3.2 L1,-1 L3.2,-1 L1.4,0.5 L2,2.8 L0,1.4 L-2,2.8 L-1.4,0.5 L-3.2,-1 L-1,-1 Z" fill="#ffd166" stroke="#7a5200" stroke-width="0.5" />`;
+              }
+              return `<circle cx="${t.coord.x}" cy="${t.coord.y}" r="1.6" fill="#e8eef5" opacity="0.55" />`;
+            })
+            .join("");
+        }).join("");
 
   const gapY = 400;
   const gapHtml = `<line x1="${minX}" y1="${gapY}" x2="${minX + W}" y2="${gapY}" stroke="#4cc9f0" stroke-width="1" stroke-dasharray="3,4" opacity="0.4" />
     <text x="${minX + W / 2}" y="${gapY + 12}" font-size="8.5" text-anchor="middle" fill="#a9bdd4">🌊 海（沖縄へは飛行機のみで移動）</text>`;
 
-  // 都市マス：分岐点は角丸四角、それ以外は丸。現在地は大きく光らせる。
-  const labelCities = CITIES.filter((c) => c.size === "metro" || c.size === "hub" || c.key === state.currentCity);
+  // ---- メイン盤面だけ：現在地から進める方向をハイライトする（サイコロ前は控えめ、振った後は着地マスを光らせる） ----
+  let dirOptions = [];
+  let landingPoints = [];
+  if (isMain) {
+    dirOptions = getDirectionOptions().options;
+    if (pendingDiceValue != null) {
+      dirOptions.forEach((opt) => {
+        const seq = getStepSequence(opt.tiles, opt.fromIdx, opt.dir, pendingDiceValue);
+        const last = seq[seq.length - 1];
+        if (last) landingPoints.push(last.coord);
+      });
+    }
+  }
+  const highlightHtml = dirOptions
+    .map((opt) => {
+      const seq = getTileSequenceToCity(opt.tiles, opt.fromIdx, opt.dir);
+      const origin = opt.tiles[opt.fromIdx].coord;
+      const pts = [origin, ...seq.map((t) => t.coord)];
+      const pointsAttr = pts.map((p) => `${p.x},${p.y}`).join(" ");
+      const isActive = pendingDiceValue != null;
+      return `<polyline points="${pointsAttr}" fill="none" stroke="${isActive ? "#ffb703" : "#7fd6ff"}" stroke-width="${isActive ? 4.4 : 3.2}" stroke-linecap="round" stroke-linejoin="round" opacity="${isActive ? 0.95 : 0.55}" />`;
+    })
+    .join("");
+  const landingHtml = landingPoints
+    .map((pt) => `<circle cx="${pt.x}" cy="${pt.y}" r="10" fill="none" stroke="#ffb703" stroke-width="2.2"><animate attributeName="r" values="10;14;10" dur="1s" repeatCount="indefinite" /></circle>`)
+    .join("");
+
+  // ---- 都市マス：ラベルはLODと重なり回避アルゴリズムで間引く（マーカー自体は常に描画し、タップで確認できる） ----
+  const dirOptionCityKeys = new Set(dirOptions.map((o) => o.cityKey).filter(Boolean));
+  const labelCandidates = CITIES.map((city) => {
+    const isCurrent = city.key === state.currentCity && !state.onLine;
+    let priority = 10;
+    if (isCurrent) priority = 100;
+    else if (dirOptionCityKeys.has(city.key)) priority = 90;
+    else if (city.size === "metro") priority = 70;
+    else if (city.size === "hub") priority = 50;
+    return { key: city.key, x: city.coord.x, y: city.coord.y, priority };
+  });
+  const labelPool = lod === LOD_FAR ? labelCandidates.filter((c) => c.priority >= 50) : labelCandidates;
+  const shownLabels = selectVisibleLabels(labelPool, view.scale);
+
   const dotsHtml = CITIES.map((city) => {
     const st = getCityMapState(city);
     const color = MAP_STATE_COLOR[st.stateClass];
     const isPlayerHere = st.isCurrent && !state.onLine;
     const junction = isJunctionCity(city.key);
-    const r = isPlayerHere ? 7 : city.size === "metro" ? 5 : city.size === "hub" ? 4.2 : 3.4;
-    const ring = isPlayerHere ? `<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r + 3}" fill="none" stroke="#ffb703" stroke-width="1.6"><animate attributeName="r" values="${r + 3};${r + 5};${r + 3}" dur="1.6s" repeatCount="indefinite" /></circle>` : "";
+    const r = isPlayerHere ? 7.5 : city.size === "metro" ? 5.5 : city.size === "hub" ? 4.6 : 3.8;
+    const ring = isPlayerHere
+      ? `<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r + 3}" fill="none" stroke="#ffb703" stroke-width="1.8"><animate attributeName="r" values="${r + 3};${r + 5.5};${r + 3}" dur="1.4s" repeatCount="indefinite" /></circle>`
+      : "";
     const badge = st.isMonopoly ? "👑" : st.hasLandmark ? "🏙️" : st.remain === 1 && st.ownedCount > 0 ? "🔥" : "";
-    const showLabel = labelCities.includes(city);
-    const label = showLabel
-      ? `<text x="${city.coord.x}" y="${city.coord.y - r - 3}" font-size="${isPlayerHere ? 9 : 7}" text-anchor="middle" fill="${isPlayerHere ? "#ffb703" : "#e8eef5"}" font-weight="${isPlayerHere ? "bold" : "normal"}" paint-order="stroke" stroke="#0f2540" stroke-width="2.5">${city.name}${badge}</text>`
+    const label = shownLabels.has(city.key)
+      ? `<text x="${city.coord.x}" y="${city.coord.y - r - 4}" font-size="${isPlayerHere ? 10 : 8}" text-anchor="middle" fill="${isPlayerHere ? "#ffb703" : "#e8eef5"}" font-weight="${isPlayerHere ? "bold" : "normal"}" paint-order="stroke" stroke="#0f2540" stroke-width="2.6">${city.name}${badge}</text>`
       : "";
     const shape = junction
-      ? `<rect x="${city.coord.x - r}" y="${city.coord.y - r}" width="${r * 2}" height="${r * 2}" rx="2.5" fill="${color}" stroke="#0f2540" stroke-width="1.2" transform="rotate(45 ${city.coord.x} ${city.coord.y})" />`
-      : `<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r}" fill="${color}" stroke="#0f2540" stroke-width="1" />`;
-    return `<g>${ring}${shape}<title>${city.name}${badge}${junction ? "（分岐点）" : ""}</title>${label}</g>`;
+      ? `<rect x="${city.coord.x - r}" y="${city.coord.y - r}" width="${r * 2}" height="${r * 2}" rx="2.6" fill="${color}" stroke="#0f2540" stroke-width="1.3" transform="rotate(45 ${city.coord.x} ${city.coord.y})" />`
+      : `<circle cx="${city.coord.x}" cy="${city.coord.y}" r="${r}" fill="${color}" stroke="#0f2540" stroke-width="1.1" />`;
+    return `<g>${ring}${shape}${label}</g>`;
   }).join("");
 
-  let playerOnLineHtml = "";
+  // ---- 現在地・移動アニメーション中のコマ（常に最前面、常に見える） ----
+  let tokenCoord = getCity(state.currentCity).coord;
   if (state.onLine) {
     const line = LINES.find((l) => l.key === state.onLine.lineKey);
     const tile = getLineTiles(line)[state.onLine.tileIdx];
-    if (tile) {
-      playerOnLineHtml = `<g>
-        <circle cx="${tile.coord.x}" cy="${tile.coord.y}" r="8" fill="none" stroke="#ffb703" stroke-width="1.6"><animate attributeName="r" values="8;10;8" dur="1.6s" repeatCount="indefinite" /></circle>
-        <circle cx="${tile.coord.x}" cy="${tile.coord.y}" r="5.5" fill="#ffb703" stroke="#0f2540" stroke-width="1" />
-        <text x="${tile.coord.x}" y="${tile.coord.y - 11}" font-size="9" text-anchor="middle" fill="#ffb703" font-weight="bold" paint-order="stroke" stroke="#0f2540" stroke-width="2.5">📍現在地</text>
-      </g>`;
-    }
+    if (tile) tokenCoord = tile.coord;
   }
+  if (isMain && animatingMove) {
+    const line = LINES.find((l) => l.key === animatingMove.lineKey);
+    const tiles = getLineTiles(line);
+    const fromIdx = state.onLine && state.onLine.lineKey === animatingMove.lineKey ? state.onLine.tileIdx : tileIndexOfCity(line, state.currentCity);
+    const idx = fromIdx + animatingMove.dir * animatingMove.stepIndex;
+    if (tiles[idx]) tokenCoord = tiles[idx].coord;
+  }
+  const tokenHtml = `<g>
+    <circle cx="${tokenCoord.x}" cy="${tokenCoord.y}" r="9" fill="none" stroke="#ffb703" stroke-width="1.8"><animate attributeName="r" values="9;12.5;9" dur="1.3s" repeatCount="indefinite" /></circle>
+    <circle cx="${tokenCoord.x}" cy="${tokenCoord.y}" r="6.5" fill="#ffb703" stroke="#0f2540" stroke-width="1.3" />
+    <text x="${tokenCoord.x}" y="${tokenCoord.y + 2.6}" font-size="8" text-anchor="middle">🚩</text>
+  </g>`;
 
   const canvasW = Math.round(W * MAP_PX_PER_UNIT);
   const canvasH = Math.round(H * MAP_PX_PER_UNIT);
@@ -1802,10 +1860,77 @@ function buildMapSvg() {
     ${silhouettes}
     ${linesHtml}
     ${tileMarksHtml}
+    ${highlightHtml}
     ${gapHtml}
     ${dotsHtml}
-    ${playerOnLineHtml}
+    ${landingHtml}
+    ${tokenHtml}
   </svg>`;
+}
+
+// ---- タップ位置（盤面ワールド座標）から、都市の詳細シートを開く（縮小時に隠れているラベルもこれで確認できる） ----
+function showCityInfoSheet(cityKey) {
+  const city = getCity(cityKey);
+  const region = getRegion(city.region);
+  const st = getCityMapState(city);
+  const badgeLabel = st.isMonopoly ? "👑 完全制覇" : st.hasLandmark ? "🏙️ ランドマーク解禁済み" : st.visited ? "訪問済み" : "未訪問";
+  setModalContent(`
+    <div class="modal-title">${city.icon} ${city.name}</div>
+    <div class="toast-text">${city.catch}</div>
+    <div class="city-sheet-meta">
+      <span class="map-chip ${st.stateClass}">${badgeLabel}</span>
+      <span class="map-chip">${region.icon} ${region.name}</span>
+      <span class="map-chip">🏢 ${st.ownedCount}/${city.properties.length}件所有</span>
+      ${st.isCurrent && !state.onLine ? `<span class="map-chip current">📍現在地</span>` : ""}
+    </div>
+    <button class="modal-close-btn primary" data-action="close-modal">とじる</button>
+  `);
+  setAfterClose(null);
+}
+function findNearestCity(worldX, worldY, threshold) {
+  let best = null;
+  CITIES.forEach((city) => {
+    const d = Math.hypot(city.coord.x - worldX, city.coord.y - worldY);
+    if (d <= threshold && (!best || d < best.d)) best = { city, d };
+  });
+  return best ? best.city : null;
+}
+
+// ============================================================
+// 全国マップ（戦略確認用モーダル）：閲覧専用。都市をタップすると詳細シートが開く。
+// ============================================================
+let mapView = { scale: 1, tx: 0, ty: 0, mode: "strategic" };
+let mapLastTapWorld = null;
+
+function renderMapCanvas() {
+  const canvas = document.getElementById("mapCanvas");
+  if (!canvas) return;
+  canvas.innerHTML = buildBoardSvg(mapView);
+  applyBoardTransform(mapView, canvas);
+}
+function handleStrategicMapTap(worldX, worldY) {
+  const city = findNearestCity(worldX, worldY, worldHitThreshold(mapView, 24));
+  if (city) showCityInfoSheet(city.key);
+}
+function showMapModal() {
+  mapView = { scale: 1, tx: 0, ty: 0, mode: "strategic" };
+  mapLastTapWorld = null;
+  setModalContent(buildMapHtml());
+  setAfterClose(null);
+  requestAnimationFrame(() => {
+    const viewport = document.getElementById("mapViewport");
+    const canvas = document.getElementById("mapCanvas");
+    if (!viewport || !canvas) return;
+    wireBoardGestures(mapView, viewport, canvas, {
+      onTap: (x, y) => {
+        mapLastTapWorld = { x, y };
+        handleStrategicMapTap(x, y);
+      },
+      onSettle: renderMapCanvas,
+    });
+    fitBoardView(mapView, viewport);
+    renderMapCanvas();
+  });
 }
 
 function buildMapHtml() {
@@ -1829,7 +1954,7 @@ function buildMapHtml() {
 
   return `<div class="modal-title">🗺️ 全国すごろくマップ</div>
     <div class="map-viewport" id="mapViewport">
-      <div class="map-canvas" id="mapCanvas">${buildMapSvg()}</div>
+      <div class="map-canvas" id="mapCanvas">${buildBoardSvg(mapView)}</div>
     </div>
     <div class="map-zoom-controls">
       <button class="map-zoom-btn" data-action="map-zoom-out">－</button>
@@ -1852,7 +1977,7 @@ function buildMapHtml() {
       <span class="map-chip landmark">🏙️ランドマーク解禁</span>
       <span class="map-chip monopoly">👑完全制覇</span>
     </div>
-    <div class="modal-sub">指2本でつまんで拡大・縮小、指1本でドラッグして移動できます。ボタンでも操作できます。</div>
+    <div class="modal-sub">指2本でつまんだ場所を中心に拡大縮小、指1本でドラッグして移動。都市をタップすると詳しい情報が見られます。</div>
     ${regionsHtml}
     <button class="modal-close-btn primary" data-action="close-modal">とじる</button>`;
 }
@@ -2176,7 +2301,8 @@ function initRefs() {
 
   diceFace = document.getElementById("diceFace");
   diceHintEl = document.getElementById("diceHint");
-  directionButtons = document.getElementById("directionButtons");
+  mainBoardViewport = document.getElementById("mainBoardViewport");
+  mainBoardCanvas = document.getElementById("mainBoardCanvas");
 
   shopBtn = document.getElementById("shopBtn");
   mapBtn = document.getElementById("mapBtn");
@@ -2213,17 +2339,13 @@ function wireEvents() {
     rollDiceOnly();
   });
 
-  directionButtons.addEventListener("click", (e) => {
-    if (directionButtons.classList.contains("controls-disabled")) return;
-    if (pendingDiceValue == null) return; // 先にサイコロを振る必要がある
-    const target = e.target.closest("[data-line-key]");
-    if (!target) return;
-    const steps = pendingDiceValue;
-    pendingDiceValue = null;
-    diceFace.classList.remove("dice-used");
-    setControlsEnabled(false);
-    movePlayerAlongTiles(target.dataset.lineKey, Number(target.dataset.dir), steps);
-  });
+  initMainBoard();
+  const boardZoomInBtn = document.getElementById("boardZoomInBtn");
+  const boardZoomOutBtn = document.getElementById("boardZoomOutBtn");
+  const boardGotoBtn = document.getElementById("boardGotoCurrentBtn");
+  if (boardZoomInBtn) boardZoomInBtn.addEventListener("click", () => zoomButton(mainBoardView, mainBoardViewport, mainBoardCanvas, 1.35, mainLastTapWorld, renderMainBoard));
+  if (boardZoomOutBtn) boardZoomOutBtn.addEventListener("click", () => zoomButton(mainBoardView, mainBoardViewport, mainBoardCanvas, 1 / 1.35, mainLastTapWorld, renderMainBoard));
+  if (boardGotoBtn) boardGotoBtn.addEventListener("click", () => centerMainBoardOnCurrent());
 
   shopBtn.addEventListener("click", () => {
     if (shopBtn.disabled) return;
@@ -2331,22 +2453,31 @@ function wireEvents() {
     }
     const mapZoomInBtn = e.target.closest('[data-action="map-zoom-in"]');
     if (mapZoomInBtn) {
-      mapZoom(1.35);
+      const canvas = document.getElementById("mapCanvas");
+      const viewport = document.getElementById("mapViewport");
+      zoomButton(mapView, viewport, canvas, 1.35, mapLastTapWorld, renderMapCanvas);
       return;
     }
     const mapZoomOutBtn = e.target.closest('[data-action="map-zoom-out"]');
     if (mapZoomOutBtn) {
-      mapZoom(1 / 1.35);
+      const canvas = document.getElementById("mapCanvas");
+      const viewport = document.getElementById("mapViewport");
+      zoomButton(mapView, viewport, canvas, 1 / 1.35, mapLastTapWorld, renderMapCanvas);
       return;
     }
     const mapFitBtn = e.target.closest('[data-action="map-fit"]');
     if (mapFitBtn) {
-      mapFitAll();
+      const viewport = document.getElementById("mapViewport");
+      if (viewport) fitBoardView(mapView, viewport);
+      renderMapCanvas();
       return;
     }
     const mapGotoBtn = e.target.closest('[data-action="map-goto-current"]');
     if (mapGotoBtn) {
-      mapGotoCurrent();
+      const viewport = document.getElementById("mapViewport");
+      const pos = getCurrentMapWorldCoord();
+      if (viewport) centerBoardViewOn(mapView, viewport, pos.x, pos.y, 2.2);
+      renderMapCanvas();
       return;
     }
     const closeBtn = e.target.closest('[data-action="close-modal"]');

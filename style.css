@@ -219,77 +219,108 @@ button{ font-family:inherit; cursor:pointer; border:none; }
   display:inline-block;
 }
 
-/* ---- 操作エリア ---- */
+/* ---- 操作エリア：日本地図上に固定されたメイン盤面（パン・ズーム可能） ---- */
 #controlArea{
   flex:1;
   display:flex;
-  flex-direction:column;
-  align-items:center;
-  justify-content:center;
-  gap: 12px;
-  padding: 4px 16px;
   min-height:0;
+  padding: 4px 12px 8px;
 }
-#diceFace{
-  font-size: 40px;
-  transition: transform .1s;
-  cursor:pointer;
-}
-#diceFace:active{ transform: scale(0.88); }
-#diceFace.rolling{ animation: shake .1s infinite; }
-#diceFace.dice-used{ filter: drop-shadow(0 0 6px rgba(255,183,3,.8)); cursor:default; }
-#diceFace.dice-used:active{ transform:none; }
-#diceFace.dice-disabled{ opacity:.4; cursor:default; pointer-events:none; }
 @keyframes shake{
   0%{ transform: rotate(-8deg); }
   50%{ transform: rotate(8deg); }
   100%{ transform: rotate(-8deg); }
 }
-.dice-hint{
-  font-size: 12px;
-  color: var(--text-dim);
-  text-align:center;
-  min-height: 14px;
-}
-
-.direction-buttons{
-  display:flex;
-  width:100%;
-  flex:1;
-  min-height:0;
-}
-.local-board-wrap{
+.board-viewport{
+  position: relative;
+  width: 100%;
+  flex: 1;
+  min-height: 220px;
+  overflow: hidden;
+  background: rgba(0,0,0,.22);
+  border-radius: 16px;
+  touch-action: none;
+  cursor: grab;
   transition: opacity .15s;
 }
-.local-board-wrap.controls-disabled{
-  opacity:.55;
+.board-viewport.controls-disabled{
+  opacity:.6;
   pointer-events:none;
 }
-.local-board-viewport{
-  width:100%;
-  height:100%;
-  min-height: 220px;
-  background: rgba(0,0,0,.2);
-  border-radius: 16px;
+.board-canvas{
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.board-hint{
+  position:absolute;
+  top:8px;
+  left:50%;
+  transform:translateX(-50%);
+  background: rgba(15,37,64,.85);
+  color: var(--text);
+  font-size: 11.5px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  pointer-events:none;
+  white-space:nowrap;
+  max-width: 88%;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  z-index:3;
+}
+.board-zoom-controls{
+  position:absolute;
+  left:8px;
+  bottom:8px;
+  display:flex;
+  gap:6px;
+  z-index:3;
+}
+.board-zoom-btn{
+  flex-shrink:0;
+  background: rgba(20,40,66,.88);
+  color: var(--text);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 10px;
+  padding: 7px 11px;
+  font-size: 14px;
+  font-weight:bold;
+}
+.board-zoom-btn.wide{ font-size: 11px; }
+.board-zoom-btn:active{ transform: scale(0.94); }
+.dice-fab{
+  position:absolute;
+  right:10px;
+  bottom:10px;
+  z-index:3;
+  width:56px;
+  height:56px;
+  border-radius:50%;
+  background: linear-gradient(160deg, #2a5188, #16324f);
+  border: 2px solid rgba(255,255,255,.28);
+  font-size:26px;
   display:flex;
   align-items:center;
   justify-content:center;
-  overflow:hidden;
+  box-shadow: 0 4px 14px rgba(0,0,0,.45);
+  cursor:pointer;
+  transition: transform .1s;
 }
-.local-board-svg{
-  width:100%;
-  height:100%;
-  display:block;
+.dice-fab:active{ transform: scale(0.9); }
+.dice-fab.rolling{ animation: shake .1s infinite; }
+.dice-fab.dice-used{ filter: drop-shadow(0 0 7px rgba(255,183,3,.85)); cursor:default; }
+.dice-fab.dice-used:active{ transform:none; }
+.dice-fab.dice-disabled{ opacity:.4; cursor:default; pointer-events:none; }
+.japan-map-svg text{ pointer-events:none; }
+.city-sheet-meta{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  margin: 10px 0 14px;
 }
-.local-dir-group{ cursor:pointer; }
-.local-dir-group:active{ opacity:.75; }
-.local-board-viewport.awaiting-roll .local-dir-group{
-  opacity:.5;
-  pointer-events:none;
-}
-.local-origin{ pointer-events:none; }
-.local-compass{ pointer-events:none; }
-.local-board-svg text{ pointer-events:none; }
 
 /* ---- ボトムナビ ---- */
 #bottomNav{

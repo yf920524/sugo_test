@@ -67,11 +67,18 @@
       <div id="routeProgress" class="route-progress hidden"></div>
     </div>
 
-    <!-- 操作エリア：サイコロ・方向選択 -->
+    <!-- 操作エリア：日本地図上に固定されたすごろく盤（パン・ズーム可能） -->
     <div id="controlArea">
-      <div id="diceFace">🎲</div>
-      <div id="diceHint" class="dice-hint">🎲 タップしてサイコロを振ろう！</div>
-      <div id="directionButtons" class="direction-buttons"></div>
+      <div id="mainBoardViewport" class="board-viewport main-board">
+        <div id="mainBoardCanvas" class="board-canvas"></div>
+        <div id="diceHint" class="board-hint">🎲 タップしてサイコロを振ろう！</div>
+        <div class="board-zoom-controls">
+          <button id="boardZoomOutBtn" class="board-zoom-btn">－</button>
+          <button id="boardZoomInBtn" class="board-zoom-btn">＋</button>
+          <button id="boardGotoCurrentBtn" class="board-zoom-btn wide">📍現在地へ</button>
+        </div>
+        <button id="diceFace" class="dice-fab">🎲</button>
+      </div>
     </div>
 
     <!-- 下部：サブ操作 -->
