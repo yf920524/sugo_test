@@ -29,7 +29,7 @@ let startScreen, gameScreen, continueBtn, newGameBtn;
 let statYear, statMonth, victoryBadge, menuBtn, statAnnualRevenue, goalBarFill;
 let statCash, statAssets, statProps, statMonopoly;
 let cityIcon, cityName, cityCatch, cityRegionBadge, routeProgressEl;
-let diceFace, directionButtons;
+let diceFace, diceHintEl, directionButtons;
 let shopBtn, mapBtn, collectionBtn, logBtn;
 let modalRoot, modalBox;
 
@@ -423,7 +423,17 @@ function renderTileStepProgress(tile, line, dir, stepNum, totalSteps) {
   }
 }
 
-function rollDiceThenMove(lineKey, dir) {
+// サイコロを振った後、まだ方向を選んでいない間だけ出目を保持する（振る前・移動確定後はnull）
+let pendingDiceValue = null;
+
+function updateDiceHint() {
+  if (!diceHintEl) return;
+  diceHintEl.textContent = pendingDiceValue == null ? "🎲 タップしてサイコロを振ろう！" : `🎯 ${pendingDiceValue}が出た！進む方向をタップ`;
+}
+
+// 桃鉄と同じ操作順：まずサイコロを振って出目を確定し、そのあとで進む方向を選ぶ
+function rollDiceOnly() {
+  if (pendingDiceValue !== null) return;
   diceFace.classList.add("rolling");
   let cycles = 0;
   const spin = setInterval(() => {
@@ -434,8 +444,11 @@ function rollDiceThenMove(lineKey, dir) {
       diceFace.classList.remove("rolling");
       const value = randInt(1, 6);
       diceFace.textContent = DICE_FACES[value - 1];
-      addLog(`🎲 ${value}が出た！`);
-      movePlayerAlongTiles(lineKey, dir, value);
+      diceFace.classList.add("dice-used");
+      addLog(`🎲 ${value}が出た！進む方向を選ぼう`);
+      pendingDiceValue = value;
+      updateDiceHint();
+      renderDirectionButtons();
     }
   }, 70);
 }
@@ -570,48 +583,102 @@ function buildTileMarkerSvg(t, cx, cy, r) {
   return `<circle cx="${cx}" cy="${cy}" r="${r * 0.45}" fill="#e8eef5" opacity="0.65" />`;
 }
 
-// 現在地アニメーション中の一時的なコマ座標（移動アニメーション中だけ設定される）
 // 移動アニメーション中だけ設定される、今表示すべき進行方向とマス位置（現在の実座標ではなく盤面上の位置）
 let animatingMove = null; // { lineKey, dir, stepIndex }
 
-// メイン画面用：現在地を中心に方向を放射状に並べた「ローカルすごろく盤」。
-// 都市の密集地（関東など）では実際の距離のままだとラベルが重なってしまうため、
-// マス間隔は盤面用に均等な固定間隔とし、各方向の並び順だけ実際の方角（東西南北）に合わせている。
+const LOCAL_TILE_MIN = 12; // 1マスの最小表示間隔（近すぎる都市同士のラベルが重ならないための下限）
+const LOCAL_TILE_MAX = 20; // 1マスの最大表示間隔（遠い都市で盤面が間延びしすぎないための上限）
+const LOCAL_MAX_VISIBLE = 6; // サイコロの最大目に合わせ、1画面に6マス先まで見せる
+
+// 現在地からの本当の方角（ベアリング）はそのまま保ちつつ、マス間隔だけ一定範囲に収めて描画する。
+// 実距離そのままだと関東など密集地のラベルが重なり、逆に長距離路線だと盤面が間延びしてしまうため。
+function projectLocalPoint(originCoord, coord, stepIndex) {
+  const dx = coord.x - originCoord.x;
+  const dy = coord.y - originCoord.y;
+  const realDist = Math.hypot(dx, dy) || 0.0001;
+  const renderDist = Math.min(Math.max(realDist, stepIndex * LOCAL_TILE_MIN), stepIndex * LOCAL_TILE_MAX);
+  const scale = renderDist / realDist;
+  return { x: dx * scale, y: dy * scale };
+}
+
+// 到着予定の都市からさらに先へ進むと何があるか（次の分岐先）を一言プレビューする。
+// マスの上限は6だが都市間の区間は最大でも6マス以内に収まる設計のため、
+// 「その先」は主にこの＝到着都市のさらに先の分岐先プレビューで示す。
+function getBeyondPreviewNames(cityKey) {
+  const backKey = state.onLine ? null : state.currentCity;
+  return getNeighbors(cityKey)
+    .filter((n) => n.cityKey !== backKey)
+    .slice(0, 2)
+    .map((n) => getCity(n.cityKey).name);
+}
+
+// メイン画面用：現在地を中心に、実際の方角のまま近隣路線をたどる「地図ベースのローカルすごろく盤」。
+// 全国マップ（buildMapSvg）と同じマス・都市の見た目を使うので、ズームインした状態として見える。
+// サイコロは振ってから方向を選ぶ操作順（桃鉄式）：pendingDiceValue が立っている間だけ着地マスを光らせる。
 function buildLocalBoardSvg() {
   const { originCoord, options } = getDirectionOptions();
-  const optionSeqs = options.map((opt) => {
-    const seq = getTileSequenceToCity(opt.tiles, opt.fromIdx, opt.dir);
-    const firstCoord = seq.length ? seq[0].coord : originCoord;
-    const bearing = Math.atan2(firstCoord.y - originCoord.y, firstCoord.x - originCoord.x);
-    return { ...opt, seq, bearing };
-  });
-  optionSeqs.sort((a, b) => a.bearing - b.bearing);
 
-  const n = Math.max(optionSeqs.length, 1);
-  const stepUnit = 24;
-  const angleStep = (2 * Math.PI) / n;
-  let maxExtent = stepUnit;
-
-  const rendered = optionSeqs.map((opt, idx) => {
-    const theta = -Math.PI / 2 + idx * angleStep;
-    const dx = Math.cos(theta), dy = Math.sin(theta);
+  const rendered = options.map((opt) => {
+    const fullSeq = getTileSequenceToCity(opt.tiles, opt.fromIdx, opt.dir);
+    const visible = fullSeq.slice(0, LOCAL_MAX_VISIBLE);
     const pts = [{ x: 0, y: 0 }];
-    opt.seq.forEach((t, i) => {
-      const dist = stepUnit * (i + 1);
-      pts.push({ x: dx * dist, y: dy * dist });
-    });
-    maxExtent = Math.max(maxExtent, stepUnit * opt.seq.length);
-    return { ...opt, pts };
+    visible.forEach((t, i) => pts.push(projectLocalPoint(originCoord, t.coord, i + 1)));
+    let beyond = null;
+    if (fullSeq.length > LOCAL_MAX_VISIBLE) {
+      const last = pts[pts.length - 1];
+      const ang = Math.atan2(last.y, last.x);
+      const dist = LOCAL_MAX_VISIBLE * LOCAL_TILE_MIN + LOCAL_TILE_MIN * 0.85;
+      const destCity = getCity(fullSeq[fullSeq.length - 1].cityKey);
+      beyond = { x: Math.cos(ang) * dist, y: Math.sin(ang) * dist, cityName: destCity.name, cityIcon: destCity.icon, remain: fullSeq.length - LOCAL_MAX_VISIBLE };
+    }
+    return { ...opt, visible, pts, beyond };
   });
+
+  let half = LOCAL_MAX_VISIBLE * LOCAL_TILE_MIN * 0.6 + 30;
+  rendered.forEach((opt) => {
+    opt.pts.forEach((p) => { half = Math.max(half, Math.abs(p.x) + 26, Math.abs(p.y) + 26); });
+    if (opt.beyond) half = Math.max(half, Math.abs(opt.beyond.x) + 34, Math.abs(opt.beyond.y) + 18);
+    const lastTile = opt.visible[opt.visible.length - 1];
+    if (!opt.beyond && lastTile && lastTile.type === "city") {
+      const lastPt = opt.pts[opt.pts.length - 1];
+      half = Math.max(half, Math.abs(lastPt.x) + 26, Math.abs(lastPt.y) + 30);
+    }
+  });
+
+  const landingStep = pendingDiceValue; // 振った後だけ、その歩数目のマスを着地マスとして光らせる
 
   const pathsHtml = rendered
     .map((opt) => {
       const pointsAttr = opt.pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
-      const markers = opt.seq.map((t, i) => buildTileMarkerSvg(t, opt.pts[i + 1].x, opt.pts[i + 1].y, t.type === "city" ? 9 : 4.2)).join("");
+      const markers = opt.visible
+        .map((t, i) => {
+          const p = opt.pts[i + 1];
+          const r = t.type === "city" ? 9 : 4.2;
+          const isLanding = landingStep != null && landingStep === i + 1;
+          const ring = isLanding
+            ? `<circle cx="${p.x}" cy="${p.y}" r="${r + 5}" fill="none" stroke="#ffb703" stroke-width="2"><animate attributeName="r" values="${r + 5};${r + 8};${r + 5}" dur="1s" repeatCount="indefinite" /></circle>`
+            : "";
+          let preview = "";
+          if (!opt.beyond && i === opt.visible.length - 1 && t.type === "city") {
+            const names = getBeyondPreviewNames(t.cityKey);
+            if (names.length) {
+              preview = `<text x="${p.x}" y="${p.y + r + 13}" font-size="7.5" text-anchor="middle" fill="#7d93ac" paint-order="stroke" stroke="#0f2540" stroke-width="2">→${names.join("・")}</text>`;
+            }
+          }
+          return `${ring}${buildTileMarkerSvg(t, p.x, p.y, r)}${preview}`;
+        })
+        .join("");
+      const beyondHtml = opt.beyond
+        ? `<g opacity="0.85">
+            <line x1="${opt.pts[opt.pts.length - 1].x.toFixed(1)}" y1="${opt.pts[opt.pts.length - 1].y.toFixed(1)}" x2="${opt.beyond.x.toFixed(1)}" y2="${opt.beyond.y.toFixed(1)}" stroke="${PATH_COLOR}" stroke-width="2" stroke-dasharray="2,3" opacity="0.7" />
+            <text x="${opt.beyond.x.toFixed(1)}" y="${opt.beyond.y.toFixed(1)}" font-size="8.5" text-anchor="middle" fill="#a9bdd4" paint-order="stroke" stroke="#0f2540" stroke-width="2.5">➡️あと${opt.beyond.remain}で${opt.beyond.cityIcon}${opt.beyond.cityName}</text>
+          </g>`
+        : "";
       return `<g class="local-dir-group" data-line-key="${opt.lineKey}" data-dir="${opt.dir}">
         <polyline points="${pointsAttr}" fill="none" stroke="transparent" stroke-width="22" stroke-linecap="round" />
         <polyline points="${pointsAttr}" fill="none" stroke="${PATH_COLOR}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9" />
         ${markers}
+        ${beyondHtml}
       </g>`;
     })
     .join("");
@@ -627,8 +694,15 @@ function buildLocalBoardSvg() {
     <text x="${tokenPt.x}" y="${tokenPt.y + 2.8}" font-size="8.5" text-anchor="middle">🚩</text>
   </g>`;
 
-  const half = maxExtent + 28;
+  const compassHtml = `<g class="local-compass" opacity="0.35" font-size="9" fill="#a9bdd4" text-anchor="middle">
+    <text x="0" y="${(-half + 12).toFixed(1)}">北</text>
+    <text x="0" y="${(half - 5).toFixed(1)}">南</text>
+    <text x="${(half - 10).toFixed(1)}" y="4">東</text>
+    <text x="${(-half + 10).toFixed(1)}" y="4">西</text>
+  </g>`;
+
   return `<svg viewBox="${-half} ${-half} ${half * 2} ${half * 2}" class="local-board-svg" xmlns="http://www.w3.org/2000/svg">
+    ${compassHtml}
     ${pathsHtml}
     ${originHtml}
   </svg>`;
@@ -636,8 +710,11 @@ function buildLocalBoardSvg() {
 
 function renderDirectionButtons() {
   if (!directionButtons) return;
-  directionButtons.className = "direction-buttons local-board-wrap";
-  directionButtons.innerHTML = `<div class="local-board-viewport">${buildLocalBoardSvg()}</div>`;
+  // controls-disabled は setControlsEnabled() が管理する状態なので、再描画のたびに消してしまわないよう保持する
+  const wasDisabled = directionButtons.classList.contains("controls-disabled");
+  directionButtons.className = "direction-buttons local-board-wrap" + (wasDisabled ? " controls-disabled" : "");
+  const stageClass = pendingDiceValue == null ? "awaiting-roll" : "ready-to-move";
+  directionButtons.innerHTML = `<div class="local-board-viewport ${stageClass}">${buildLocalBoardSvg()}</div>`;
 }
 
 function renderCityDisplayOnly() {
@@ -663,6 +740,12 @@ function renderCityDisplayOnly() {
 
 function renderCityPanel() {
   renderCityDisplayOnly();
+  pendingDiceValue = null;
+  if (diceFace) {
+    diceFace.textContent = "🎲";
+    diceFace.classList.remove("dice-used");
+  }
+  updateDiceHint();
   renderDirectionButtons();
 }
 
@@ -689,6 +772,7 @@ function closeModal() {
 }
 function setControlsEnabled(enabled) {
   if (directionButtons) directionButtons.classList.toggle("controls-disabled", !enabled);
+  if (diceFace) diceFace.classList.toggle("dice-disabled", !enabled);
   shopBtn.disabled = !enabled;
   mapBtn.disabled = !enabled;
   collectionBtn.disabled = !enabled;
@@ -2091,6 +2175,7 @@ function initRefs() {
   routeProgressEl = document.getElementById("routeProgress");
 
   diceFace = document.getElementById("diceFace");
+  diceHintEl = document.getElementById("diceHint");
   directionButtons = document.getElementById("directionButtons");
 
   shopBtn = document.getElementById("shopBtn");
@@ -2123,12 +2208,21 @@ function wireEvents() {
     startNewGame();
   });
 
+  diceFace.addEventListener("click", () => {
+    if (diceFace.classList.contains("dice-disabled")) return;
+    rollDiceOnly();
+  });
+
   directionButtons.addEventListener("click", (e) => {
     if (directionButtons.classList.contains("controls-disabled")) return;
+    if (pendingDiceValue == null) return; // 先にサイコロを振る必要がある
     const target = e.target.closest("[data-line-key]");
     if (!target) return;
+    const steps = pendingDiceValue;
+    pendingDiceValue = null;
+    diceFace.classList.remove("dice-used");
     setControlsEnabled(false);
-    rollDiceThenMove(target.dataset.lineKey, Number(target.dataset.dir));
+    movePlayerAlongTiles(target.dataset.lineKey, Number(target.dataset.dir), steps);
   });
 
   shopBtn.addEventListener("click", () => {

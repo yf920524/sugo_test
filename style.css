@@ -233,12 +233,23 @@ button{ font-family:inherit; cursor:pointer; border:none; }
 #diceFace{
   font-size: 40px;
   transition: transform .1s;
+  cursor:pointer;
 }
+#diceFace:active{ transform: scale(0.88); }
 #diceFace.rolling{ animation: shake .1s infinite; }
+#diceFace.dice-used{ filter: drop-shadow(0 0 6px rgba(255,183,3,.8)); cursor:default; }
+#diceFace.dice-used:active{ transform:none; }
+#diceFace.dice-disabled{ opacity:.4; cursor:default; pointer-events:none; }
 @keyframes shake{
   0%{ transform: rotate(-8deg); }
   50%{ transform: rotate(8deg); }
   100%{ transform: rotate(-8deg); }
+}
+.dice-hint{
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align:center;
+  min-height: 14px;
 }
 
 .direction-buttons{
@@ -272,7 +283,13 @@ button{ font-family:inherit; cursor:pointer; border:none; }
 }
 .local-dir-group{ cursor:pointer; }
 .local-dir-group:active{ opacity:.75; }
+.local-board-viewport.awaiting-roll .local-dir-group{
+  opacity:.5;
+  pointer-events:none;
+}
 .local-origin{ pointer-events:none; }
+.local-compass{ pointer-events:none; }
+.local-board-svg text{ pointer-events:none; }
 
 /* ---- ボトムナビ ---- */
 #bottomNav{
